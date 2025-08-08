@@ -321,6 +321,45 @@ def anls(
     return {"anls": question_result}
 
 
+@register_metric(
+    metric="jaccard",
+    higher_is_better=True,
+    output_type="generate_until",
+    aggregation="mean",
+)
+def jaccard(predictions, references):
+    """Jaccard metric that works with process_results output"""
+    import logging
+    eval_logger = logging.getLogger("lmms-eval")
+    
+    eval_logger.info(f"DEBUG: jaccard metric called with predictions={predictions}, references={references}")
+    eval_logger.info(f"DEBUG: predictions type={type(predictions)}, references type={type(references)}")
+    
+    def jaccard_index(pred_set, target_set):
+        """Calculate Jaccard index between two sets"""
+        pred_set = set(pred_set) if pred_set else set()
+        target_set = set(target_set) if target_set else set()
+        
+        if len(pred_set) == 0 and len(target_set) == 0:
+            return 1.0
+        
+        intersection = len(pred_set.intersection(target_set))
+        union = len(pred_set.union(target_set))
+        
+        return intersection / union if union > 0 else 0.0
+    
+    # predictions should be the list from process_results
+    pred = predictions if isinstance(predictions, list) else []
+    
+    # references should be the target list  
+    ref = references if isinstance(references, list) else []
+    
+    # Calculate jaccard score and return just the number for aggregation
+    score = jaccard_index(pred, ref)
+    eval_logger.info(f"DEBUG: jaccard score calculated: {score}")
+    return score
+
+
 def pop_stddev(arr):
     mu = mean(arr)
     return math.sqrt(sum([(x - mu) ** 2 for x in arr]) / len(arr))
