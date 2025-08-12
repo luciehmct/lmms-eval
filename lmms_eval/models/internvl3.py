@@ -34,17 +34,39 @@ DEFAULT_GEN_KWARGS = dict(
 
 
 def build_transform(input_size):
+    """Build a transformation pipeline for image preprocessing.
+
+    Args:
+        input_size (int): The target size for the input images.
+
+    Returns:
+        T.Compose: The image transformation pipeline.
+    """
     MEAN, STD = IMAGENET_MEAN, IMAGENET_STD
-    transform = T.Compose([
-        T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-        T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
-        T.ToTensor(),
-        T.Normalize(mean=MEAN, std=STD)
-    ])
+    transform = T.Compose(
+        [
+            T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+            T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+            T.ToTensor(),
+            T.Normalize(mean=MEAN, std=STD),
+        ]
+    )
     return transform
 
 
 def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
+    """Find the closest aspect ratio from a set of target ratios.
+
+    Args:
+        aspect_ratio (float): The aspect ratio of the original image.
+        target_ratios (List[Tuple[int, int]]): A list of target aspect ratios to consider.
+        width (int): The width of the original image.
+        height (int): The height of the original image.
+        image_size (int): The size of the image after resizing.
+
+    Returns:
+        Tuple[int, int]: The closest aspect ratio as a tuple (width, height).
+    """
     best_ratio_diff = float("inf")
     best_ratio = (1, 1)
     area = width * height
@@ -61,18 +83,27 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
 
 
 def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbnail=False):
+    """Dynamically preprocess the input image by resizing and splitting it into multiple patches.
+
+    Args:
+        image (PIL.Image): The input image to preprocess.
+        min_num (int, optional): The minimum number of patches to create. Defaults to 1.
+        max_num (int, optional): The maximum number of patches to create. Defaults to 12.
+        image_size (int, optional): The size of the image after resizing. Defaults to 448.
+        use_thumbnail (bool, optional): Whether to use a thumbnail of the image. Defaults to False.
+
+    Returns:
+        List[PIL.Image]: A list of preprocessed image patches.
+    """
     orig_width, orig_height = image.size
     aspect_ratio = orig_width / orig_height
 
     # calculate the existing image aspect ratio
-    target_ratios = set(
-        (i, j) for n in range(min_num, max_num + 1) for i in range(1, n + 1) for j in range(1, n + 1) if
-        i * j <= max_num and i * j >= min_num)
+    target_ratios = set((i, j) for n in range(min_num, max_num + 1) for i in range(1, n + 1) for j in range(1, n + 1) if i * j <= max_num and i * j >= min_num)
     target_ratios = sorted(target_ratios, key=lambda x: x[0] * x[1])
 
     # find the closest aspect ratio to the target
-    target_aspect_ratio = find_closest_aspect_ratio(
-        aspect_ratio, target_ratios, orig_width, orig_height, image_size)
+    target_aspect_ratio = find_closest_aspect_ratio(aspect_ratio, target_ratios, orig_width, orig_height, image_size)
 
     # calculate the target width and height
     target_width = image_size * target_aspect_ratio[0]
@@ -87,7 +118,7 @@ def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbna
             (i % (target_width // image_size)) * image_size,
             (i // (target_width // image_size)) * image_size,
             ((i % (target_width // image_size)) + 1) * image_size,
-            ((i // (target_width // image_size)) + 1) * image_size
+            ((i // (target_width // image_size)) + 1) * image_size,
         )
         # split the image
         split_img = resized_img.crop(box)
@@ -100,14 +131,36 @@ def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbna
 
 
 def load_image(image, input_size=448, max_num=12):
+    """Load and preprocess the input image.
+
+    Args:
+        image (PIL.Image): The input image to preprocess.
+        input_size (int, optional): The size of the image after resizing. Defaults to 448.
+        max_num (int, optional): The maximum number of patches to create. Defaults to 12.
+
+    Returns:
+        torch.Tensor: The preprocessed image tensor.
+    """
     transform = build_transform(input_size=input_size)
-    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
+    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=False, max_num=max_num)
     pixel_values = [transform(image) for image in images]
     pixel_values = torch.stack(pixel_values)
     return pixel_values
 
 
 def get_index(bound, fps, max_frame, first_idx=0, num_segments=32):
+    """Get the frame indices for each segment.
+
+    Args:
+        bound (tuple): The start and end time bounds for the segment.
+        fps (float): The frames per second of the video.
+        max_frame (int): The maximum number of frames in the video.
+        first_idx (int, optional): The index of the first frame to include. Defaults to 0.
+        num_segments (int, optional): The number of segments to divide the video into. Defaults to 32.
+
+    Returns:
+        np.ndarray: The frame indices for each segment.
+    """
     if bound:
         start, end = bound[0], bound[1]
     else:
@@ -115,36 +168,45 @@ def get_index(bound, fps, max_frame, first_idx=0, num_segments=32):
     start_idx = max(first_idx, round(start * fps))
     end_idx = min(round(end * fps), max_frame)
     seg_size = float(end_idx - start_idx) / num_segments
-    frame_indices = np.array([
-        int(start_idx + (seg_size / 2) + np.round(seg_size * idx))
-        for idx in range(num_segments)
-    ])
+    frame_indices = np.array([int(start_idx + (seg_size / 2) + np.round(seg_size * idx)) for idx in range(num_segments)])
     return frame_indices
 
 
-def load_video(video_path, bound=None, input_size=448, max_num=1, num_segments=32):
+def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32):
+    """Load and preprocess the input video.
+
+    Args:
+        video_path (str): The path to the video file.
+        bound (tuple, optional): The start and end time bounds for the segment. Defaults to None.
+        input_size (int, optional): The size of the video frames after resizing. Defaults to 448.
+        max_num (int, optional): The maximum number of patches to create. Defaults to 6.
+        num_segments (int, optional): The number of segments to divide the video into. Defaults to 32.
+
+    Returns:
+        torch.Tensor: The preprocessed video tensor.
+    """
     vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
     max_frame = len(vr) - 1
     fps = float(vr.get_avg_fps())
-    
+
     # Calculate video duration
     video_length = len(vr) / fps
 
     pixel_values_list, num_patches_list = [], []
     transform = build_transform(input_size=input_size)
     frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
-    
+
     # Calculate timestamps for each selected frame
     image_times = []
     for frame_index in frame_indices:
         timestamp = frame_index / fps
         image_times.append(timestamp)
-    
-    print(f"DEBUG: load_video - video_path: {video_path}, total_frames: {len(vr)}, requested_segments: {num_segments}, selected_indices: {len(frame_indices)}, video_length: {video_length:.2f}s")
-    
+
+    eval_logger.debug(f"DEBUG: load_video - video_path: {video_path}, total_frames: {len(vr)}, requested_segments: {num_segments}, selected_indices: {len(frame_indices)}, video_length: {video_length:.2f}s")
+
     for frame_index in frame_indices:
         img = Image.fromarray(vr[frame_index].asnumpy()).convert("RGB")
-        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)
+        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=False, max_num=max_num)
         pixel_values = [transform(tile) for tile in img]
         pixel_values = torch.stack(pixel_values)
         num_patches_list.append(pixel_values.shape[0])
@@ -154,6 +216,15 @@ def load_video(video_path, bound=None, input_size=448, max_num=1, num_segments=3
 
 
 def split_model(model_name, num_layers=None):
+    """Split the model into smaller parts for distributed training.
+
+    Args:
+        model_name (str): The name of the model to split.
+        num_layers (int, optional): The number of layers in the model. Defaults to None.
+
+    Returns:
+        dict: A mapping of layer names to device IDs.
+    """
     device_map = {}
     world_size = torch.cuda.device_count()
     if num_layers is None:
@@ -162,11 +233,13 @@ def split_model(model_name, num_layers=None):
             "InternVL3-1B": 16,  # Based on Qwen2.5-0.5B
             "InternVL3-2B": 24,  # Based on Qwen2.5-1.5B
             "InternVL3-8B": 28,  # Based on Qwen2.5-7B
-            "InternVL3-14B": 40, # Based on Qwen2.5-14B
-            "InternVL3-38B": 64, # Based on Qwen2.5-32B
-            "InternVL3-78B": 80, # Based on Qwen2.5-72B
-        }.get(model_name.split("/")[-1], 28)  # Default to 28 for InternVL3-8B
-    
+            "InternVL3-14B": 40,  # Based on Qwen2.5-14B
+            "InternVL3-38B": 64,  # Based on Qwen2.5-32B
+            "InternVL3-78B": 80,  # Based on Qwen2.5-72B
+        }.get(
+            model_name.split("/")[-1], 28 # Default to 28 for InternVL3-8B
+        )  
+
     # Since the first GPU will be used for ViT, treat it as half a GPU.
     num_layers_per_gpu = math.ceil(num_layers / (world_size - 0.5))
     num_layers_per_gpu = [num_layers_per_gpu] * world_size
@@ -190,13 +263,12 @@ def split_model(model_name, num_layers=None):
 
 @register_model("internvl3")
 class InternVL3(lmms):
+    """InternVL3-8B model implementation for lmms-eval
+
+    Args:
+        lmms (lmms): The base lmms class.
     """
-    InternVL3-8B model implementation for lmms-eval
-    
-    InternVL3 is an advanced multimodal large language model with superior
-    multimodal perception and reasoning capabilities, including video understanding.
-    """
-    
+
     def __init__(
         self,
         pretrained: str = "OpenGVLab/InternVL3-8B",
@@ -204,7 +276,7 @@ class InternVL3(lmms):
         device: str = "cuda:0",
         device_map: str = "cuda:0",
         batch_size: str = "1",
-        num_frame: int = 32, 
+        num_frame: int = 32,
         dynamic_image_size=False,
         use_temporal_context: bool = True,  # Enable enhanced temporal context by default
         num_layers=None,
@@ -244,20 +316,22 @@ class InternVL3(lmms):
             torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
-            device_map=self.device_map
+            device_map=self.device_map,
         ).eval()
-        
+
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.path,
             trust_remote_code=True,
-            use_fast=False  # InternVL3 recommendation
+            use_fast=False,  # InternVL3 recommendation
         )
 
         if accelerator.num_processes > 1:
             assert accelerator.distributed_type in [
-                DistributedType.FSDP, DistributedType.MULTI_GPU, DistributedType.DEEPSPEED
+                DistributedType.FSDP,
+                DistributedType.MULTI_GPU,
+                DistributedType.DEEPSPEED,
             ], "Unsupported distributed type provided. Only DDP and FSDP are supported."
-            
+
             if accelerator.distributed_type == DistributedType.DEEPSPEED:
                 kwargs = {
                     "train_micro_batch_size_per_gpu": self.batch_size_per_gpu,
@@ -286,13 +360,13 @@ class InternVL3(lmms):
             self._world_size = 1
 
         self.modality = modality
-        
+
         # Initialize debug log file
         self.debug_log_file = None
-        if hasattr(self, 'use_temporal_context') and self.use_temporal_context:
+        if hasattr(self, "use_temporal_context") and self.use_temporal_context:
             # Create debug log file in the current working directory
             self.debug_log_file = f"mammalps_debug_prompts_{os.getpid()}.jsonl"
-            eval_logger.info(f"Debug prompts will be saved to: {self.debug_log_file}")
+            eval_logger.debug(f"Debug prompts will be saved to: {self.debug_log_file}")
 
     @property
     def config(self):
@@ -333,6 +407,17 @@ class InternVL3(lmms):
         return new_list
 
     def generate_until(self, requests) -> List[str]:
+        """Generate responses until a certain condition is met.
+
+        Args:
+            requests (List[Request]): The list of requests to process.
+
+        Raises:
+            ValueError: If the requests list is empty or invalid.
+
+        Returns:
+            List[str]: The generated responses.
+        """
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="InternVL3 Responding")
 
@@ -353,7 +438,7 @@ class InternVL3(lmms):
 
             visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
             visuals = self.flatten(visuals)
-            
+
             if self.modality == "image":
                 if visuals:
                     visuals = [load_image(visual, max_num=self.max_num).to(torch.bfloat16).cuda() for visual in visuals]
@@ -365,42 +450,36 @@ class InternVL3(lmms):
                 else:
                     pixel_values = None
                     num_patches_list = None
-                    
+
                 response, history = self.model.chat(
-                    self.tokenizer, 
-                    pixel_values, 
-                    contexts, 
-                    gen_kwargs, 
-                    num_patches_list=num_patches_list, 
-                    history=None, 
-                    return_history=True
+                    self.tokenizer,
+                    pixel_values,
+                    contexts,
+                    gen_kwargs,
+                    num_patches_list=num_patches_list,
+                    history=None,
+                    return_history=True,
                 )
-                
+
             elif self.modality == "video":
                 assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
                 video_path = visuals[0]
                 pixel_values, num_patches_list, image_times, video_length = load_video(
-                    video_path, 
+                    video_path,
                     num_segments=self.num_frame,
-                    max_num=1  # Use 1 for video frames to avoid excessive memory usage
+                    max_num=6,
                 )
                 pixel_values = pixel_values.to(torch.bfloat16).cuda()
-                
+
                 # DEBUG: Print actual frame count and temporal info
-                print(f"DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
-                print(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in image_times[:5]]}{'...' if len(image_times) > 5 else ''}")
-                
-                # Create enhanced video prefix with temporal information (animal_dataset.py style)
-                if hasattr(self, 'use_temporal_context') and self.use_temporal_context:
+                eval_logger.debug(f"DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
+                eval_logger.debug(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in image_times[:5]]}{'...' if len(image_times) > 5 else ''}")
+
+                # Create enhanced video prefix with temporal information
+                if hasattr(self, "use_temporal_context") and self.use_temporal_context:
                     # Enhanced version with timestamps and video duration
-                    special_tokens = "\n".join([
-                        "Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i])
-                        for i in range(len(num_patches_list))
-                    ])
-                    video_prefix = (
-                        "The video is {:.2f} second(s) long and you can see the frames below:\n".format(video_length)
-                        + special_tokens + "\n"
-                    )
+                    special_tokens = "\n".join(["Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i]) for i in range(len(num_patches_list))])
+                    video_prefix = "The video is {:.2f} second(s) long and you can see the frames below:\n".format(video_length) + special_tokens + "\n"
                     # Replace <video> placeholder if present, otherwise prepend
                     if "<video>" in contexts:
                         question = contexts.replace("<video>\n", video_prefix)
@@ -408,51 +487,56 @@ class InternVL3(lmms):
                         question = video_prefix + contexts
                 else:
                     # Standard version (current implementation)
-                    video_prefix = "".join([f"Frame{i+1}: <image>\n" for i in range(len(num_patches_list))])
+                    video_prefix = "".join([f"Frame{i + 1}: <image>\n" for i in range(len(num_patches_list))])
                     question = video_prefix + contexts
-                
+
                 # DEBUG: Log the complete final prompt with timestamps that will be sent to the model
-                print(f"DEBUG: ===== FINAL PROMPT TO MODEL =====")
-                print(f"DEBUG: Video path: {video_path}")
-                print(f"DEBUG: Video length: {video_length:.2f}s, Frames: {len(num_patches_list)}")
-                print(f"DEBUG: Prompt length: {len(question)} chars")
-                print(f"DEBUG: Full prompt:")
-                print(f"DEBUG: ----START----")
-                print(question)
-                print(f"DEBUG: ----END----")
-                print(f"DEBUG: ================================")
-                
+                eval_logger.debug(f"DEBUG: ===== FINAL PROMPT TO MODEL =====")
+                eval_logger.debug(f"DEBUG: Video path: {video_path}")
+                eval_logger.debug(f"DEBUG: Video length: {video_length:.2f}s, Frames: {len(num_patches_list)}")
+                eval_logger.debug(f"DEBUG: Prompt length: {len(question)} chars")
+                eval_logger.debug(f"DEBUG: Full prompt:")
+                eval_logger.debug(f"DEBUG: ----START----")
+                eval_logger.debug(question)
+                eval_logger.debug(f"DEBUG: ----END----")
+                eval_logger.debug(f"DEBUG: ================================")
+
                 response, history = self.model.chat(
-                    self.tokenizer, 
-                    pixel_values, 
-                    question, 
-                    gen_kwargs, 
-                    num_patches_list=num_patches_list, 
-                    history=None, 
-                    return_history=True
+                    self.tokenizer,
+                    pixel_values,
+                    question,
+                    gen_kwargs,
+                    num_patches_list=num_patches_list,
+                    history=None,
+                    return_history=True,
                 )
-                
+
                 # Save debug information to JSONL file
                 if self.debug_log_file:
                     try:
                         # Get document information
                         doc = self.task_dict[task][split][doc_id]
-                        
+
                         # Extract ground truth based on task
                         ground_truth = []
-                        if 'action' in task:
-                            ground_truth = doc.get('action', [])
-                        elif 'activity' in task:
-                            ground_truth = doc.get('activity', [])
-                        elif 'animal' in task:
-                            ground_truth = doc.get('animal', [])
-                        
+                        if "action" in task:
+                            ground_truth = doc.get("action", [])
+                        elif "activity" in task:
+                            ground_truth = doc.get("activity", [])
+                        elif "animal" in task:
+                            ground_truth = doc.get("animal", [])
+
                         # Extract the filtered answer from the full response
                         import re
+
                         filtered_answer = []
-                        
+
                         # Try to extract from "Final answer: ['item1', 'item2']" format
-                        final_answer_match = re.search(r"Final answer:\s*(\[.*?\])", response, re.IGNORECASE | re.DOTALL)
+                        final_answer_match = re.search(
+                            r"Final answer:\s*(\[.*?\])",
+                            response,
+                            re.IGNORECASE | re.DOTALL,
+                        )
                         if final_answer_match:
                             try:
                                 filtered_answer = eval(final_answer_match.group(1))
@@ -461,7 +545,7 @@ class InternVL3(lmms):
                             except Exception as e:
                                 print(f"DEBUG: Failed to parse final answer: {e}")
                                 filtered_answer = []
-                        
+
                         # Fallback: try to extract any list-like structure
                         if not filtered_answer:
                             list_match = re.search(r"\[([^\]]+)\]", response)
@@ -469,12 +553,12 @@ class InternVL3(lmms):
                                 content = list_match.group(1)
                                 # Split by comma and clean up
                                 filtered_answer = [item.strip().strip("'\"") for item in content.split(",")]
-                        
+
                         # Create debug entry
                         debug_entry = {
                             "dataset": "mammalps",
-                            "video_id": doc.get('clip', 'unknown'),
-                            "question_id": doc.get('id', doc_id),
+                            "video_id": doc.get("clip", "unknown"),
+                            "question_id": doc.get("id", doc_id),
                             "task": task,
                             "video_length_seconds": video_length,
                             "num_frames": len(num_patches_list),
@@ -482,21 +566,21 @@ class InternVL3(lmms):
                             "question": question,
                             "answer": filtered_answer,  # Extracted final answer list
                             "ground_truth": ground_truth,
-                            "full_answer": response  # Complete model response with reasoning
+                            "full_answer": response,  # Complete model response with reasoning
                         }
-                        
+
                         # Append to JSONL file
-                        with open(self.debug_log_file, 'a', encoding='utf-8') as f:
-                            f.write(json.dumps(debug_entry, ensure_ascii=False) + '\n')
-                        
-                        print(f"DEBUG: Saved prompt info to {self.debug_log_file}")
-                        
+                        with open(self.debug_log_file, "a", encoding="utf-8") as f:
+                            f.write(json.dumps(debug_entry, ensure_ascii=False) + "\n")
+
+                        eval_logger.debug(f"DEBUG: Saved prompt info to {self.debug_log_file}")
+
                     except Exception as e:
-                        print(f"DEBUG: Failed to save debug info: {e}")
-                
+                        eval_logger.debug(f"DEBUG: Failed to save debug info: {e}")
+
             else:
                 raise ValueError(f"Unsupported modality: {self.modality}")
-                
+
             res.append(response)
             pbar.update(1)
         pbar.close()
