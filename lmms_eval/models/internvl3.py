@@ -2,6 +2,8 @@ import logging
 import math
 import json
 import os
+import base64
+import cv2
 from datetime import timedelta
 from typing import List, Tuple
 
@@ -277,7 +279,9 @@ class InternVL3(lmms):
         device_map: str = "cuda:0",
         batch_size: str = "1",
         num_frame: int = 32,
+        input_size: int = 448,  # Add input_size to match animal_dataset.py
         dynamic_image_size=False,
+        use_thumbnail=False,  # Add use_thumbnail to match animal_dataset.py
         use_temporal_context: bool = True,  # Enable enhanced temporal context by default
         num_layers=None,
         max_num: int = 6,  # Maximum number of image tiles
@@ -285,9 +289,16 @@ class InternVL3(lmms):
     ):
         super().__init__()
 
+        # Handle max_dynamic_patch parameter alias (to match animal_dataset.py interface)
+        if 'max_dynamic_patch' in kwargs:
+            max_num = kwargs['max_dynamic_patch']
+            eval_logger.info(f"Using max_dynamic_patch={max_num} as max_num parameter")
+
         self.path = pretrained
         self.num_frame = num_frame
         self.max_num = max_num
+        self.input_size = input_size  # Store input_size
+        self.use_thumbnail = use_thumbnail  # Store use_thumbnail
         self.use_temporal_context = use_temporal_context
 
         batch_size = int(batch_size)
@@ -441,7 +452,7 @@ class InternVL3(lmms):
 
             if self.modality == "image":
                 if visuals:
-                    visuals = [load_image(visual, max_num=self.max_num).to(torch.bfloat16).cuda() for visual in visuals]
+                    visuals = [load_image(visual, input_size=self.input_size, max_num=self.max_num).to(torch.bfloat16).cuda() for visual in visuals]
                     pixel_values = torch.cat(visuals, dim=0)
                     num_patches_list = [visual.size(0) for visual in visuals]
                     image_tokens = ["<image>"] * len(visuals)
@@ -466,27 +477,64 @@ class InternVL3(lmms):
                 video_path = visuals[0]
                 pixel_values, num_patches_list, image_times, video_length = load_video(
                     video_path,
+                    input_size=self.input_size,  # Use the configured input_size
                     num_segments=self.num_frame,
-                    max_num=6,
+                    max_num=self.max_num,  # Use the configured max_num value
                 )
-                pixel_values = pixel_values.to(torch.bfloat16).cuda()
+                
+                # Handle GPT-based models with base64 encoding (matching animal_dataset.py)
+                if "gpt-" in self.path:
+                    # Convert tensor frames to base64 encoded images for GPT models
+                    special_tokens = [
+                        "Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i])
+                        for i in range(len(num_patches_list))
+                    ]
+                    
+                    processed_image_list = []
+                    for frame_index in range(pixel_values.shape[0]):
+                        frame = pixel_values[frame_index]
+                        frame = frame.permute(1, 2, 0).detach().cpu().numpy()
+                        if frame.dtype != np.uint8:
+                            frame = (frame * 255).clip(0, 255).astype(np.uint8)
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        _, buffer = cv2.imencode(".jpg", frame_bgr)
+                        encoded_frame = base64.b64encode(buffer).decode("utf-8")
+                        processed_image_list.append(encoded_frame)
+                    
+                    pixel_values = processed_image_list
+                    
+                    # For GPT models, remove <video> from contexts
+                    contexts_clean = contexts.replace("<video>", "")
+                else:
+                    pixel_values = pixel_values.to(torch.bfloat16).cuda()
+                    contexts_clean = contexts
 
                 # DEBUG: Print actual frame count and temporal info
                 eval_logger.debug(f"DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
                 eval_logger.debug(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in image_times[:5]]}{'...' if len(image_times) > 5 else ''}")
 
-                # Create enhanced video prefix with temporal information
+                # Create enhanced video prefix with temporal information (matching animal_dataset.py format)
                 if hasattr(self, "use_temporal_context") and self.use_temporal_context:
-                    # Enhanced version with timestamps and video duration
-                    special_tokens = "\n".join(["Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i]) for i in range(len(num_patches_list))])
-                    video_prefix = "The video is {:.2f} second(s) long and you can see the frames below:\n".format(video_length) + special_tokens + "\n"
-                    # Replace <video> placeholder if present, otherwise prepend
-                    if "<video>" in contexts:
-                        question = contexts.replace("<video>\n", video_prefix)
+                    if "gpt-" in self.path:
+                        # For GPT models, contexts were already cleaned above
+                        question = contexts_clean
                     else:
-                        question = video_prefix + contexts
+                        # Enhanced version with timestamps and video duration (matching animal_dataset.py)
+                        special_tokens = "\n".join([
+                            "Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i])
+                            for i in range(len(num_patches_list))
+                        ])
+                        special_tokens = (
+                            "The video is {:.2f} second(s) long and you can see the frames below:\n".format(
+                                video_length
+                            )
+                            + special_tokens
+                        )
+                        
+                        # Replace <video>\n placeholder to match animal_dataset.py format
+                        question = contexts.replace("<video>\n", special_tokens + "\n")
                 else:
-                    # Standard version (current implementation)
+                    # Standard version (fallback)
                     video_prefix = "".join([f"Frame{i + 1}: <image>\n" for i in range(len(num_patches_list))])
                     question = video_prefix + contexts
 
