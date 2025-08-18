@@ -450,7 +450,31 @@ class InternVL3(lmms):
             visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
             visuals = self.flatten(visuals)
 
-            if self.modality == "image":
+            # DEBUG: Log what visuals we received
+            eval_logger.info(f"VIDEO_DEBUG: Received visuals: {visuals}")
+            eval_logger.info(f"VIDEO_DEBUG: Visual types: {[type(v).__name__ for v in visuals]}")
+            
+            # Automatic modality detection based on file extensions and task type
+            current_modality = self.modality
+            eval_logger.info(f"VIDEO_DEBUG: Initial modality: {current_modality}")
+            
+            # Force video mode for MammalPS tasks
+            if task and "mammalps" in task.lower():
+                current_modality = "video"
+                eval_logger.info(f"VIDEO_DEBUG: MammalPS task detected ({task}), forcing video mode")
+            elif visuals and len(visuals) > 0:
+                # Check if any visual is a video file
+                video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
+                for visual in visuals:
+                    eval_logger.info(f"VIDEO_DEBUG: Checking visual: {visual} (type: {type(visual).__name__})")
+                    if isinstance(visual, str) and any(visual.lower().endswith(ext) for ext in video_extensions):
+                        current_modality = "video"
+                        eval_logger.info(f"VIDEO_DEBUG: Detected video file: {visual}, switching to video mode")
+                        break
+            
+            eval_logger.info(f"VIDEO_DEBUG: Final current_modality: {current_modality}")
+
+            if current_modality == "image":
                 if visuals:
                     visuals = [load_image(visual, input_size=self.input_size, max_num=self.max_num).to(torch.bfloat16).cuda() for visual in visuals]
                     pixel_values = torch.cat(visuals, dim=0)
@@ -472,7 +496,7 @@ class InternVL3(lmms):
                     return_history=True,
                 )
 
-            elif self.modality == "video":
+            elif current_modality == "video":
                 assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
                 video_path = visuals[0]
                 pixel_values, num_patches_list, image_times, video_length = load_video(
@@ -510,16 +534,17 @@ class InternVL3(lmms):
                     contexts_clean = contexts
 
                 # DEBUG: Print actual frame count and temporal info
-                eval_logger.debug(f"DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
-                eval_logger.debug(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in image_times[:5]]}{'...' if len(image_times) > 5 else ''}")
+                eval_logger.info(f"VIDEO_DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
+                eval_logger.info(f"VIDEO_DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in image_times[:5]]}{'...' if len(image_times) > 5 else ''}")
 
                 # Create enhanced video prefix with temporal information (matching animal_dataset.py format)
                 if hasattr(self, "use_temporal_context") and self.use_temporal_context:
+                    eval_logger.info("VIDEO_DEBUG: Using enhanced temporal context mode")
                     if "gpt-" in self.path:
                         # For GPT models, contexts were already cleaned above
                         question = contexts_clean
                     else:
-                        # Enhanced version with timestamps and video duration (matching animal_dataset.py)
+                        # Enhanced version with timestamps and video duration
                         special_tokens = "\n".join([
                             "Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i])
                             for i in range(len(num_patches_list))
@@ -531,23 +556,28 @@ class InternVL3(lmms):
                             + special_tokens
                         )
                         
-                        # Replace <video>\n placeholder to match animal_dataset.py format
-                        question = contexts.replace("<video>\n", special_tokens + "\n")
+                        # Replace <video> placeholder (with or without newline)
+                        if "<video>\n" in contexts:
+                            question = contexts.replace("<video>\n", special_tokens + "\n")
+                            eval_logger.info("VIDEO_DEBUG: Replaced <video>\\n with temporal context")
+                        elif "<video>" in contexts:
+                            question = contexts.replace("<video>", special_tokens)
+                            eval_logger.info("VIDEO_DEBUG: Replaced <video> with temporal context")
+                        else:
+                            # Fallback: prepend to contexts if no <video> placeholder found
+                            question = special_tokens + "\n" + contexts
+                            eval_logger.info("VIDEO_DEBUG: No <video> placeholder found, prepending temporal context")
                 else:
+                    eval_logger.info("VIDEO_DEBUG: Using standard video processing (fallback)")
                     # Standard version (fallback)
                     video_prefix = "".join([f"Frame{i + 1}: <image>\n" for i in range(len(num_patches_list))])
                     question = video_prefix + contexts
 
-                # DEBUG: Log the complete final prompt with timestamps that will be sent to the model
-                eval_logger.debug(f"DEBUG: ===== FINAL PROMPT TO MODEL =====")
-                eval_logger.debug(f"DEBUG: Video path: {video_path}")
-                eval_logger.debug(f"DEBUG: Video length: {video_length:.2f}s, Frames: {len(num_patches_list)}")
-                eval_logger.debug(f"DEBUG: Prompt length: {len(question)} chars")
-                eval_logger.debug(f"DEBUG: Full prompt:")
-                eval_logger.debug(f"DEBUG: ----START----")
-                eval_logger.debug(question)
-                eval_logger.debug(f"DEBUG: ----END----")
-                eval_logger.debug(f"DEBUG: ================================")
+                # Success confirmation log
+                eval_logger.info(f"VIDEO_DEBUG: ✅ TEMPORAL CONTEXT SUCCESSFULLY APPLIED")
+                eval_logger.info(f"VIDEO_DEBUG: Video: {video_path}")
+                eval_logger.info(f"VIDEO_DEBUG: Duration: {video_length:.2f}s, Frames: {len(num_patches_list)}")
+                eval_logger.info(f"VIDEO_DEBUG: Enhanced prompt length: {len(question)} chars")
 
                 response, history = self.model.chat(
                     self.tokenizer,
