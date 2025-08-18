@@ -117,32 +117,44 @@ You should use the following label space to identify {entity_plural}:
 <video>
 {question}"""
 
+        # DEBUG: Log that we're generating a prompt with <video> placeholder
+        eval_logger.debug(f"Generated MammalPS prompt with <video> placeholder for entity_type='{entity_type}', will be replaced with temporal information by model")
+
     if subtask == "animal":
-        return _generate_mammalps_prompt(
+        prompt = _generate_mammalps_prompt(
             entity_type="animals",
             entity_plural="animals",
             definition="",
             label_space="roe_deer, fox, red_deer, wolf, hare",
             question="Find all animals that are present in the video footage.\n\nYour answer should follow the example below:\nstep 1\nanimals = recognize(entity_type='animal')\noutput:List[str]: ['red_deer']\n\nstep 2\nreturn animals\noutput:Final answer: ['red_deer']",
         )
+        eval_logger.debug(f"Generated animal prompt with <video> placeholder - length: {len(prompt)} chars")
+        eval_logger.debug(f"FULL ANIMAL PROMPT:\n{prompt}")
+        return prompt
 
     elif subtask == "action":
-        return _generate_mammalps_prompt(
+        prompt = _generate_mammalps_prompt(
             entity_type="actions",
             entity_plural="actions",
             definition="An action is a discrete, often well-defined motor event or behavior performed by an animal, typically characterized by a specific goal or function.",
             label_space="sniffing, looking_at_camera, scratching_hoof, grazing, running, drinking, shaking_fur, jumping, unknown, bathing, urinating, scratching_body, standing_head_up, scratching_antlers, vocalizing, laying, standing_head_down, defecating, walking",
             question="What actions do the animals perform during the video?\n\nYour answer should follow the example below:\nstep 1\nactions = recognize(entity_type='action')\noutput:List[str]: ['eating', 'attending']\n\nstep 2\nreturn actions\noutput:Final answer: ['eating', 'attending']",
         )
+        eval_logger.debug(f"Generated action prompt with <video> placeholder - length: {len(prompt)} chars")
+        eval_logger.debug(f"FULL ACTION PROMPT:\n{prompt}")
+        return prompt
 
     elif subtask == "activity":
-        return _generate_mammalps_prompt(
+        prompt = _generate_mammalps_prompt(
             entity_type="activities",
             entity_plural="activities",
             definition="An activity is a broader or longer-lasting pattern of behavior, often encompassing multiple actions that together form a functional behavioral state or mode.",
             label_space="marking, unknown, camera_reaction, grooming, foraging, chasing, playing, escaping, vigilance, resting, courtship",
             question="Detect all animal activities occurring in the video.\n\nYour answer should follow the example below:\nstep 1\nactivities = recognize(entity_type='activity')\noutput:List[str]: ['foraging']\n\nstep 2\nreturn activities\noutput:Final answer: ['foraging']",
         )
+        eval_logger.debug(f"Generated activity prompt with <video> placeholder - length: {len(prompt)} chars")
+        eval_logger.debug(f"FULL ACTIVITY PROMPT:\n{prompt}")
+        return prompt
 
     return ""
 
@@ -317,6 +329,8 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
 
     # DEBUG: Log clip_path and question_id for extraction from logs
     eval_logger.debug(f"process_results - clip_path: {doc.get('clip', 'Unknown')}")
+    eval_logger.debug(f"process_results - question_id: {doc.get('id', 'Unknown')}")
+    eval_logger.debug(f"process_results - subtask: {subtask}")
     eval_logger.debug(f"process_results - full_model_response: {repr(response)}")
 
     # Try to detect the subtask from the call stack
