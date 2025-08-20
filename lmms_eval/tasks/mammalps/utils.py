@@ -1,5 +1,6 @@
 import re
 import os
+import json
 
 from loguru import logger as eval_logger
 
@@ -24,8 +25,8 @@ def mammalps_doc_to_visual(doc, lmms_eval_specific_kwargs=None):
     try:
         from huggingface_hub import hf_hub_download
 
-        # Download the video file from the HuggingFace dataset repository
-        local_path = hf_hub_download(repo_id="luciehmct/mammalps-test-recognition", filename=clip_path, repo_type="dataset")
+        # Download the video file from the updated HuggingFace dataset repository
+        local_path = hf_hub_download(repo_id="luciehmct/mammalps", filename=clip_path, repo_type="dataset")
 
         if os.path.exists(local_path):
             return [local_path]
@@ -39,28 +40,17 @@ def mammalps_doc_to_visual(doc, lmms_eval_specific_kwargs=None):
 
 
 def mammalps_doc_to_text(doc, lmms_eval_specific_kwargs=None):
-    """Extract the human prompt from conversations.
+    """Extract the prompt from the new nested dataset structure.
 
     Args:
-        doc (dict): A dictionary representing the document, expected to contain a "conversations" key with a list of messages.
+        doc (dict): A dictionary representing the document with nested structure for each subtask.
         lmms_eval_specific_kwargs (dict, optional): Configuration parameters containing:
             - 'subtask': String specifying the task type ('animal', 'action', or 'activity')
             Defaults to None, which results in 'animal' subtask being used.
 
     Returns:
-        str: The formatted prompt text for the specified mammalps subtask. Returns:
-            - Human message value if found in conversations
-            - Generated task-specific prompt for animal recognition (default)
-            - Generated task-specific prompt for action recognition
-            - Generated task-specific prompt for activity recognition
-            - Empty string if subtask is not recognized
+        str: The prompt for the specified mammalps subtask.
     """
-    if "conversations" in doc and len(doc["conversations"]) > 0:
-        human_message = doc["conversations"][0]
-        if human_message.get("from") == "human":
-            return human_message["value"]
-
-    # Fallback to generic prompt if conversations not found
     if lmms_eval_specific_kwargs is None:
         lmms_eval_specific_kwargs = {}
 
@@ -75,104 +65,59 @@ def mammalps_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     # Use the detected subtask
     eval_logger.debug(f"Final determined subtask for prompt: {subtask}")
 
-    # Common prompt template
-    def _generate_mammalps_prompt(entity_type, entity_plural, definition, label_space, question):
-        """Generate a consistent prompt for mammalps subtasks.
-
-        Args:
-            entity_type (str): The type of entity to recognize (e.g., 'animal', 'action', 'activity').
-            entity_plural (str): The plural form of the entity type (e.g., 'animals', 'actions', 'activities').
-            definition (str): A brief definition of the entity type.
-            label_space (str): A comma-separated list of possible labels for the entity type.
-            question (str): The specific question to answer regarding the video content.
-
-        Returns:
-            str: A formatted prompt string for the specified subtask.
-        """
-        return f"""You are an assistant specialized in analyzing animal videos. Your task is to answer questions about the animals and their behaviors in a given video.
-
-**Instruction:**
-You are provided with the following base function, which you can use to decompose the main question into subtasks and solve them step by step:
-def recognize(entity_type: str, condition: Optional[str]) -> List[str]:
-    \"\"\"Returns all unique entities of the specified type detected in the video (e.g., 'animal', 'action', 'activity').
-    If condition is provided, returns all entities of the specified type that appear when the given condition is true.
-
-    Example:
-        >>> recognize(entity_type='animal')
-        ['dog', 'cat']
-        >>> recognize(entity_type='action')
-        ['bark', 'run']
-        >>> recognize(entity_type='action', condition='animal == dog')
-        ['bark', 'run']
-    \"\"\"
-In addition to these base function, you may use standard Python functions such as average, max, min, sum, len, sorted, etc., as needed to help you answer the questions.
-
-**Output format:**
-Your final output should be 'Final answer:' followed by the list of {entity_plural} recognized in the video, formatted as List[str].
-
-{definition}
-You should use the following label space to identify {entity_plural}:
-{entity_type} label space: {label_space}
-
-<video>
-{question}"""
-
-        # DEBUG: Log that we're generating a prompt with <video> placeholder
-        eval_logger.debug(f"Generated MammalPS prompt with <video> placeholder for entity_type='{entity_type}', will be replaced with temporal information by model")
-
-    if subtask == "animal":
-        prompt = _generate_mammalps_prompt(
-            entity_type="animals",
-            entity_plural="animals",
-            definition="",
-            label_space="roe_deer, fox, red_deer, wolf, hare",
-            question="Find all animals that are present in the video footage.\n\nYour answer should follow the example below:\nstep 1\nanimals = recognize(entity_type='animal')\noutput:List[str]: ['red_deer']\n\nstep 2\nreturn animals\noutput:Final answer: ['red_deer']",
-        )
-        eval_logger.debug(f"Generated animal prompt with <video> placeholder - length: {len(prompt)} chars")
-        eval_logger.debug(f"FULL ANIMAL PROMPT:\n{prompt}")
+    # Extract prompt from the nested structure
+    if subtask in doc and "prompt" in doc[subtask]:
+        prompt = doc[subtask]["prompt"]
+        eval_logger.debug(f"Generated {subtask} prompt with <video> placeholder - length: {len(prompt)} chars")
+        eval_logger.debug(f"FULL {subtask.upper()} PROMPT:\n{prompt}")
+        
+        # Store the original prompt for later retrieval with timestamps
+        doc_id = doc.get("id", "Unknown")
+        try:
+            # Create a simple cache for the original prompt to be used by process_results
+            original_prompt_cache_file = "mammalps_original_prompts.json"
+            
+            # Load existing cache or create new
+            try:
+                with open(original_prompt_cache_file, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                cache = {}
+            
+            # Store the original prompt with subtask info
+            cache_key = f"{doc_id}_{subtask}"
+            cache[cache_key] = {
+                "id": doc_id,
+                "subtask": subtask,
+                "original_prompt": prompt,
+                "clip_path": doc.get("clip", "Unknown")
+            }
+            
+            # Save updated cache
+            with open(original_prompt_cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+                
+        except Exception as e:
+            eval_logger.debug(f"Failed to save original prompt: {e}")
+        
         return prompt
-
-    elif subtask == "action":
-        prompt = _generate_mammalps_prompt(
-            entity_type="actions",
-            entity_plural="actions",
-            definition="An action is a discrete, often well-defined motor event or behavior performed by an animal, typically characterized by a specific goal or function.",
-            label_space="sniffing, looking_at_camera, scratching_hoof, grazing, running, drinking, shaking_fur, jumping, unknown, bathing, urinating, scratching_body, standing_head_up, scratching_antlers, vocalizing, laying, standing_head_down, defecating, walking",
-            question="What actions do the animals perform during the video?\n\nYour answer should follow the example below:\nstep 1\nactions = recognize(entity_type='action')\noutput:List[str]: ['eating', 'attending']\n\nstep 2\nreturn actions\noutput:Final answer: ['eating', 'attending']",
-        )
-        eval_logger.debug(f"Generated action prompt with <video> placeholder - length: {len(prompt)} chars")
-        eval_logger.debug(f"FULL ACTION PROMPT:\n{prompt}")
-        return prompt
-
-    elif subtask == "activity":
-        prompt = _generate_mammalps_prompt(
-            entity_type="activities",
-            entity_plural="activities",
-            definition="An activity is a broader or longer-lasting pattern of behavior, often encompassing multiple actions that together form a functional behavioral state or mode.",
-            label_space="marking, unknown, camera_reaction, grooming, foraging, chasing, playing, escaping, vigilance, resting, courtship",
-            question="Detect all animal activities occurring in the video.\n\nYour answer should follow the example below:\nstep 1\nactivities = recognize(entity_type='activity')\noutput:List[str]: ['foraging']\n\nstep 2\nreturn activities\noutput:Final answer: ['foraging']",
-        )
-        eval_logger.debug(f"Generated activity prompt with <video> placeholder - length: {len(prompt)} chars")
-        eval_logger.debug(f"FULL ACTIVITY PROMPT:\n{prompt}")
-        return prompt
-
-    return ""
+    else:
+        eval_logger.error(f"No prompt found for subtask '{subtask}' in document")
+        return ""
 
 
 def mammalps_doc_to_target(doc, lmms_eval_specific_kwargs=None):
-    """Extract target answer based on subtask.
+    """Extract target answer from the new nested dataset structure.
 
     Args:
-        doc (dict): A dictionary representing the document, expected to contain a "conversations" key with a list of messages.
+        doc (dict): A dictionary representing the document with nested structure for each subtask.
         lmms_eval_specific_kwargs (dict, optional): Configuration parameters containing:
             - 'subtask': String specifying the task type ('animal', 'action', or 'activity')
             Defaults to None, which results in 'animal' subtask being used.
 
     Returns:
-        str: The target answer for the specified mammalps subtask. Returns:
-            - Animal target if subtask is 'animal'
-            - Action target if subtask is 'action'
-            - Activity target if subtask is 'activity'
+        list: The target answer for the specified mammalps subtask. Returns:
+            - Answer list if found in nested structure
             - Empty list if subtask is not recognized or no target found
     """
     if lmms_eval_specific_kwargs is None:
@@ -224,21 +169,14 @@ def mammalps_doc_to_target(doc, lmms_eval_specific_kwargs=None):
 
     eval_logger.debug(f"Final determined subtask: {detected_subtask}")
 
-    if detected_subtask == "animal":
-        target = doc.get("animal", [])
-        eval_logger.debug(f"Returning animal target: {target}")
+    # Extract answer from the nested structure
+    if detected_subtask in doc and "answer" in doc[detected_subtask]:
+        target = doc[detected_subtask]["answer"]
+        eval_logger.debug(f"Returning {detected_subtask} target: {target}")
         return target
-    elif detected_subtask == "action":
-        target = doc.get("action", [])
-        eval_logger.debug(f"Returning action target: {target}")
-        return target
-    elif detected_subtask == "activity":
-        target = doc.get("activity", [])
-        eval_logger.debug(f"Returning activity target: {target}")
-        return target
-
-    eval_logger.warning(f"Unknown subtask '{detected_subtask}', defaulting to animal")
-    return doc.get("animal", [])
+    else:
+        eval_logger.warning(f"No answer found for subtask '{detected_subtask}' in document")
+        return []
 
 
 def mammalps_jaccard_metric(predictions, references):
@@ -385,38 +323,111 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
 
     # Extract list from response - look for "Final answer:" pattern first
     predicted_labels = []
+    
+    eval_logger.debug(f"Raw response for parsing: {repr(response[:500])}")  # Log first 500 chars for debugging
+
+    # Check if response seems incomplete (ends with code block or doesn't have Final answer)
+    response_seems_incomplete = (
+        response.strip().endswith("```") or 
+        response.strip().endswith("recognize('animal')") or
+        response.strip().endswith("recognize('action')") or
+        response.strip().endswith("recognize('activity')") or
+        "Final answer:" not in response
+    )
+    
+    if response_seems_incomplete:
+        eval_logger.warning(f"Response seems incomplete: {repr(response[-100:])}")  # Log last 100 chars
+
+    # Define a comprehensive list of artifacts to filter out
+    artifacts_to_filter = [
+        "s execute", "```python", "recognize(", "entity_type", "def ", "return", "import", "from ", "print(", "Example:",
+        "python", "code", "function", "list", "str", "List", "str", "Optional",
+        # Filter out entity type parameters that are not actual answers
+        "animal", "action", "activity"
+    ]
 
     # Try to extract from "Final answer: ['item1', 'item2']" format
-    final_answer_match = re.search(r"Final answer:\s*(\[.*?\])", response, re.IGNORECASE | re.DOTALL)
+    final_answer_match = re.search(r"Final answer:\s*\[([^\]]*)\]", response, re.IGNORECASE | re.DOTALL)
     if final_answer_match:
         try:
-            predicted_labels = eval(final_answer_match.group(1))
-            if isinstance(predicted_labels, list):
-                predicted_labels = [str(label).strip() for label in predicted_labels]
+            # Get the content inside the brackets
+            bracket_content = final_answer_match.group(1).strip()
+            if bracket_content:
+                # Split by comma and clean up each item
+                items = [item.strip().strip("'\"") for item in bracket_content.split(",")]
+                # Comprehensive filtering - remove artifacts, empty items, and invalid content
+                predicted_labels = []
+                for item in items:
+                    item = item.strip()
+                    
+                    # Special handling for malformed "Final answer: xxx" inside brackets
+                    if item.lower().startswith("final answer:"):
+                        # Extract the part after "Final answer:"
+                        item = item[13:].strip()  # Remove "Final answer:" prefix
+                    
+                    # Check if item is valid (not an artifact and reasonable length)
+                    if (item and len(item) > 2 and 
+                        not any(artifact in item.lower() for artifact in artifacts_to_filter) and
+                        not item.endswith("(") and not item.startswith("(") and
+                        not re.match(r'^[^a-zA-Z]*$', item)):  # Not just symbols/numbers
+                        predicted_labels.append(item)
                 eval_logger.debug(f"Extracted via final_answer format: {predicted_labels}")
         except Exception as e:
-            eval_logger.warning(f"Warning: Failed to eval final_answer match: {e}")
+            eval_logger.warning(f"Warning: Failed to parse final_answer content: {e}")
 
-    # Fallback: try to extract any list-like structure
+    # Enhanced fallback: try to extract any complete list structure first
     if not predicted_labels:
-        list_match = re.search(r"\[([^\]]+)\]", response)
-        if list_match:
-            content = list_match.group(1)
-            # Split by comma and clean up
-            predicted_labels = [item.strip().strip("'\"") for item in content.split(",")]
-            eval_logger.debug(f"Fallback : Extracted via list format: {predicted_labels}")
+        # Look for complete list patterns like ['item1', 'item2'] or ["item1", "item2"]
+        complete_list_match = re.search(r"\[([^\]]+)\]", response)
+        if complete_list_match:
+            content = complete_list_match.group(1)
+            # Check if this looks like a proper list with quotes
+            if "'" in content or '"' in content:
+                # Split by comma and clean up
+                items = [item.strip().strip("'\"") for item in content.split(",")]
+                # Apply same comprehensive filtering
+                predicted_labels = []
+                for item in items:
+                    item = item.strip()
+                    
+                    # Special handling for malformed "Final answer: xxx" inside brackets
+                    if item.lower().startswith("final answer:"):
+                        # Extract the part after "Final answer:"
+                        item = item[13:].strip()  # Remove "Final answer:" prefix
+                    
+                    if (item and len(item) > 2 and 
+                        not any(artifact in item.lower() for artifact in artifacts_to_filter) and
+                        not item.endswith("(") and not item.startswith("(") and
+                        not re.match(r'^[^a-zA-Z]*$', item)):
+                        predicted_labels.append(item)
+                eval_logger.debug(f"Fallback: Extracted via list format: {predicted_labels}")
 
-    # Final fallback: try to extract individual quoted items
+    # Final fallback: try to extract individual quoted items if still no results
     if not predicted_labels:
-        quoted_items = re.findall(r"['\"]([^'\"]+)['\"]", response)
-        if quoted_items:
-            predicted_labels = quoted_items
-            eval_logger.debug(f"Fallback : Extracted via quoted format: {predicted_labels}")
+        # But first check if response is incomplete - if so, don't extract artifacts
+        if response_seems_incomplete:
+            eval_logger.warning("Response seems incomplete, skipping quoted item extraction to avoid artifacts")
+        else:
+            quoted_items = re.findall(r"['\"]([^'\"]+)['\"]", response)
+            if quoted_items:
+                # Apply comprehensive filtering
+                predicted_labels = []
+                for item in quoted_items:
+                    item = item.strip()
+                    if (item and len(item) > 2 and 
+                        not any(artifact in item.lower() for artifact in artifacts_to_filter) and
+                        not item.endswith("(") and not item.startswith("(") and
+                        not re.match(r'^[^a-zA-Z]*$', item)):
+                        predicted_labels.append(item)
+                eval_logger.debug(f"Final fallback: Extracted via quoted format: {predicted_labels}")
 
     if not predicted_labels:
-        eval_logger.warning("Warning: No labels extracted from response! Returning empty list.")
+        if response_seems_incomplete:
+            eval_logger.warning("Warning: Response appears incomplete, no valid answer extracted!")
+        else:
+            eval_logger.warning("Warning: No labels extracted from response! Returning empty list.")
         predicted_labels = []
-
+    
     eval_logger.debug(f"Final extracted labels: {predicted_labels}")
 
     # Compute jaccard score directly since we have both prediction and target
@@ -433,19 +444,146 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
 
         return intersection / union if union > 0 else 0.0
 
-    # Get the target for comparison
-    target_key = "animal"  # Default to animal
-    if subtask:
-        target_key = subtask
-
-    target_labels = doc.get(target_key, [])
+    # Get the target for comparison from the nested document structure
+    target_labels = []
+    
+    # The document has nested structure: doc[subtask]["answer"]
+    if subtask in doc and isinstance(doc[subtask], dict) and "answer" in doc[subtask]:
+        target_labels = doc[subtask]["answer"]
+        eval_logger.debug(f"Found target in nested structure: {target_labels}")
+    else:
+        # Fallback to direct access
+        target_labels = doc.get(subtask, [])
+        if not target_labels:
+            # Try alternative key names
+            target_labels = doc.get("answer", [])
+        eval_logger.debug(f"Found target via fallback: {target_labels}")
+    
+    # Ensure target_labels is a list
     if isinstance(target_labels, str):
         target_labels = [target_labels]
+    elif not isinstance(target_labels, list):
+        target_labels = []
 
     # Calculate jaccard score
     jaccard_score = jaccard_index(predicted_labels, target_labels)
     eval_logger.info(f"INFO: Jaccard score: pred={predicted_labels}, target={target_labels}, score={jaccard_score}")
     eval_logger.debug(f"INFO: Final result for clip_path={doc.get('clip', 'Unknown')}, question_id={doc.get('id', 'Unknown')}, subtask={subtask}")
+
+    # Save detailed results to a custom JSONL file
+    try:
+        # Try to get full prompt with timestamps from cache
+        doc_id_key = doc.get("id", "Unknown")
+        full_prompt_with_timestamps = "N/A - Not available"
+        
+        try:
+            # Load timestamped prompt cache
+            with open("mammalps_prompt_cache.json", "r", encoding="utf-8") as f:
+                prompt_cache = json.load(f)
+                
+            # Try both string and integer keys for the doc_id with subtask
+            cached_info = None
+            cache_key_with_subtask = f"{doc_id_key}_{subtask}"
+            
+            # Try subtask-specific key first
+            if cache_key_with_subtask in prompt_cache:
+                cached_info = prompt_cache[cache_key_with_subtask]
+                eval_logger.debug(f"Retrieved prompt from cache for ID {cache_key_with_subtask}")
+            elif str(doc_id_key) in prompt_cache:
+                cached_info = prompt_cache[str(doc_id_key)]
+                eval_logger.debug(f"Retrieved prompt from cache for ID {doc_id_key} (string key)")
+            elif doc_id_key in prompt_cache:
+                cached_info = prompt_cache[doc_id_key]
+                eval_logger.debug(f"Retrieved prompt from cache for ID {doc_id_key} (direct key)")
+            else:
+                eval_logger.debug(f"ID {doc_id_key} not found in prompt cache (available keys: {list(prompt_cache.keys())})")
+                
+            if cached_info:
+                full_prompt_with_timestamps = cached_info.get("full_prompt_with_timestamps", "N/A")
+                
+        except Exception as e:
+            eval_logger.debug(f"Could not load prompt cache: {e}")
+            
+        # If we couldn't get the timestamped prompt, try to fallback to original prompt
+        if full_prompt_with_timestamps == "N/A - Not available":
+            try:
+                # Load original prompt cache as fallback
+                with open("mammalps_original_prompts.json", "r", encoding="utf-8") as f:
+                    original_cache = json.load(f)
+                    
+                cache_key = f"{doc_id_key}_{subtask}"
+                if cache_key in original_cache:
+                    original_info = original_cache[cache_key]
+                    full_prompt_with_timestamps = original_info.get("original_prompt", "N/A")
+                    eval_logger.debug(f"Used original prompt as fallback for ID {doc_id_key}")
+                    
+            except Exception as e:
+                eval_logger.debug(f"Could not load original prompt cache: {e}")
+        
+        # Extract the clean ground truth for output
+        clean_ground_truth = target_labels  # We already processed target_labels above
+            
+        # Create the output entry with the exact format you requested
+        output_entry = {
+            "id": doc_id_key,
+            "clip_path": doc.get("clip", "Unknown"), 
+            "prompt": full_prompt_with_timestamps,
+            "full_answer": response,
+            "answer": predicted_labels,
+            "ground_truth": clean_ground_truth,
+            "jaccard_score": jaccard_score
+        }
+        
+        # Create folder structure: Model_date_hour/mammalps_task.jsonl
+        from datetime import datetime
+        import os
+        current_time = datetime.now()
+        date_hour = current_time.strftime("%Y%m%d_%H%M")
+        
+        # Extract model name from the call stack or use default
+        model_name = "InternVL3"  # Default model name
+        try:
+            import inspect
+            frame = inspect.currentframe()
+            while frame:
+                frame_locals = frame.f_locals
+                # Look for model information in the call stack
+                if "self" in frame_locals and hasattr(frame_locals["self"], "path"):
+                    model_path = frame_locals["self"].path
+                    if "InternVL3" in model_path:
+                        model_name = "InternVL3"
+                    elif "InternVL" in model_path:
+                        model_name = "InternVL"
+                    elif "gpt" in model_path.lower():
+                        model_name = "GPT"
+                    else:
+                        # Extract model name from path
+                        if "/" in model_path:
+                            model_name = model_path.split("/")[-1]
+                        else:
+                            model_name = model_path
+                    break
+                frame = frame.f_back
+        except Exception as e:
+            eval_logger.debug(f"Could not extract model name: {e}")
+        
+        # Create folder structure in results directory
+        results_dir = "results"
+        folder_name = f"{model_name}_{date_hour}"
+        full_folder_path = os.path.join(results_dir, folder_name)
+        os.makedirs(full_folder_path, exist_ok=True)
+        
+        # Create filename: results/model_date_hour/mammalps_task.jsonl
+        output_filename = os.path.join(full_folder_path, f"mammalps_{subtask}.jsonl")
+        
+        # Append to file (create if doesn't exist)
+        with open(output_filename, "a", encoding="utf-8") as f:
+            f.write(json.dumps(output_entry, ensure_ascii=False) + "\n")
+            
+        eval_logger.debug(f"Saved detailed results to {output_filename}")
+        
+    except Exception as e:
+        eval_logger.warning(f"Warning: Failed to save detailed results: {e}")
 
     # Return the computed jaccard score
     return {"jaccard": jaccard_score}

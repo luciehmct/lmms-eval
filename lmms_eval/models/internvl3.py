@@ -84,7 +84,7 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
     return best_ratio
 
 
-def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbnail=False):
+def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbnail=True):
     """Dynamically preprocess the input image by resizing and splitting it into multiple patches.
 
     Args:
@@ -132,19 +132,20 @@ def dynamic_preprocess(image, min_num=1, max_num=12, image_size=448, use_thumbna
     return processed_images
 
 
-def load_image(image, input_size=448, max_num=12):
+def load_image(image, input_size=448, max_num=12, use_thumbnail=True):
     """Load and preprocess the input image.
 
     Args:
         image (PIL.Image): The input image to preprocess.
         input_size (int, optional): The size of the image after resizing. Defaults to 448.
         max_num (int, optional): The maximum number of patches to create. Defaults to 12.
+        use_thumbnail (bool, optional): Whether to use thumbnail. Defaults to True.
 
     Returns:
         torch.Tensor: The preprocessed image tensor.
     """
     transform = build_transform(input_size=input_size)
-    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=False, max_num=max_num)
+    images = dynamic_preprocess(image, image_size=input_size, use_thumbnail=use_thumbnail, max_num=max_num)
     pixel_values = [transform(image) for image in images]
     pixel_values = torch.stack(pixel_values)
     return pixel_values
@@ -174,7 +175,7 @@ def get_index(bound, fps, max_frame, first_idx=0, num_segments=32):
     return frame_indices
 
 
-def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32):
+def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32, use_thumbnail=True):
     """Load and preprocess the input video.
 
     Args:
@@ -183,6 +184,7 @@ def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=3
         input_size (int, optional): The size of the video frames after resizing. Defaults to 448.
         max_num (int, optional): The maximum number of patches to create. Defaults to 6.
         num_segments (int, optional): The number of segments to divide the video into. Defaults to 32.
+        use_thumbnail (bool, optional): Whether to use thumbnail. Defaults to True.
 
     Returns:
         torch.Tensor: The preprocessed video tensor.
@@ -208,7 +210,7 @@ def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=3
 
     for frame_index in frame_indices:
         img = Image.fromarray(vr[frame_index].asnumpy()).convert("RGB")
-        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=False, max_num=max_num)
+        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=use_thumbnail, max_num=max_num)
         pixel_values = [transform(tile) for tile in img]
         pixel_values = torch.stack(pixel_values)
         num_patches_list.append(pixel_values.shape[0])
@@ -504,6 +506,7 @@ class InternVL3(lmms):
                     input_size=self.input_size,  # Use the configured input_size
                     num_segments=self.num_frame,
                     max_num=self.max_num,  # Use the configured max_num value
+                    use_thumbnail=self.use_thumbnail,  # Use the configured use_thumbnail value
                 )
                 
                 # Handle GPT-based models with base64 encoding (matching animal_dataset.py)
@@ -574,10 +577,57 @@ class InternVL3(lmms):
                     question = video_prefix + contexts
 
                 # Success confirmation log
-                eval_logger.info(f"VIDEO_DEBUG: ✅ TEMPORAL CONTEXT SUCCESSFULLY APPLIED")
+                eval_logger.info("VIDEO_DEBUG: ✅ TEMPORAL CONTEXT SUCCESSFULLY APPLIED")
                 eval_logger.info(f"VIDEO_DEBUG: Video: {video_path}")
                 eval_logger.info(f"VIDEO_DEBUG: Duration: {video_length:.2f}s, Frames: {len(num_patches_list)}")
                 eval_logger.info(f"VIDEO_DEBUG: Enhanced prompt length: {len(question)} chars")
+
+                # Save prompt information for utils.py to access later
+                try:
+                    doc = self.task_dict[task][split][doc_id]
+                    doc_id_key = doc.get("id", str(doc_id))
+                    
+                    # Extract subtask from task name for combined cache key
+                    subtask = "animal"  # default
+                    if "action" in task:
+                        subtask = "action"
+                    elif "activity" in task:
+                        subtask = "activity"
+                    elif "animal" in task:
+                        subtask = "animal"
+                    
+                    # Create a temporary file to store prompt information
+                    prompt_info = {
+                        "id": doc_id_key,
+                        "subtask": subtask,
+                        "clip_path": doc.get("clip", video_path),
+                        "full_prompt_with_timestamps": question,
+                        "video_length": video_length,
+                        "frame_timestamps": image_times
+                    }
+                    
+                    # Save to a temporary prompt cache file
+                    prompt_cache_file = "mammalps_prompt_cache.json"
+                    
+                    # Load existing cache or create new
+                    try:
+                        with open(prompt_cache_file, "r", encoding="utf-8") as f:
+                            cache = json.load(f)
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        cache = {}
+                    
+                    # Add current prompt info with combined key to avoid collisions
+                    cache_key = f"{doc_id_key}_{subtask}"
+                    cache[cache_key] = prompt_info
+                    
+                    # Save updated cache
+                    with open(prompt_cache_file, "w", encoding="utf-8") as f:
+                        json.dump(cache, f, ensure_ascii=False, indent=2)
+                        
+                    eval_logger.debug(f"Saved prompt info for ID {cache_key} to cache")
+                    
+                except Exception as e:
+                    eval_logger.debug(f"Failed to save prompt info: {e}")
 
                 response, history = self.model.chat(
                     self.tokenizer,
@@ -588,73 +638,6 @@ class InternVL3(lmms):
                     history=None,
                     return_history=True,
                 )
-
-                # Save debug information to JSONL file
-                if self.debug_log_file:
-                    try:
-                        # Get document information
-                        doc = self.task_dict[task][split][doc_id]
-
-                        # Extract ground truth based on task
-                        ground_truth = []
-                        if "action" in task:
-                            ground_truth = doc.get("action", [])
-                        elif "activity" in task:
-                            ground_truth = doc.get("activity", [])
-                        elif "animal" in task:
-                            ground_truth = doc.get("animal", [])
-
-                        # Extract the filtered answer from the full response
-                        import re
-
-                        filtered_answer = []
-
-                        # Try to extract from "Final answer: ['item1', 'item2']" format
-                        final_answer_match = re.search(
-                            r"Final answer:\s*(\[.*?\])",
-                            response,
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                        if final_answer_match:
-                            try:
-                                filtered_answer = eval(final_answer_match.group(1))
-                                if isinstance(filtered_answer, list):
-                                    filtered_answer = [str(label).strip() for label in filtered_answer]
-                            except Exception as e:
-                                print(f"DEBUG: Failed to parse final answer: {e}")
-                                filtered_answer = []
-
-                        # Fallback: try to extract any list-like structure
-                        if not filtered_answer:
-                            list_match = re.search(r"\[([^\]]+)\]", response)
-                            if list_match:
-                                content = list_match.group(1)
-                                # Split by comma and clean up
-                                filtered_answer = [item.strip().strip("'\"") for item in content.split(",")]
-
-                        # Create debug entry
-                        debug_entry = {
-                            "dataset": "mammalps",
-                            "video_id": doc.get("clip", "unknown"),
-                            "question_id": doc.get("id", doc_id),
-                            "task": task,
-                            "video_length_seconds": video_length,
-                            "num_frames": len(num_patches_list),
-                            "frame_timestamps": image_times,
-                            "question": question,
-                            "answer": filtered_answer,  # Extracted final answer list
-                            "ground_truth": ground_truth,
-                            "full_answer": response,  # Complete model response with reasoning
-                        }
-
-                        # Append to JSONL file
-                        with open(self.debug_log_file, "a", encoding="utf-8") as f:
-                            f.write(json.dumps(debug_entry, ensure_ascii=False) + "\n")
-
-                        eval_logger.debug(f"DEBUG: Saved prompt info to {self.debug_log_file}")
-
-                    except Exception as e:
-                        eval_logger.debug(f"DEBUG: Failed to save debug info: {e}")
 
             else:
                 raise ValueError(f"Unsupported modality: {self.modality}")
