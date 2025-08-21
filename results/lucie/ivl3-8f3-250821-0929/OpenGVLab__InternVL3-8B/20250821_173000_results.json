@@ -1,0 +1,232 @@
+{
+  "results": {
+    "mammalps": {
+      " ": " ",
+      "alias": "mammalps"
+    },
+    "mammalps_action": {
+      "alias": " - mammalps_action",
+      "jaccard,none": 1.0,
+      "jaccard_stderr,none": "N/A"
+    },
+    "mammalps_activity": {
+      "alias": " - mammalps_activity",
+      "jaccard,none": 0.0,
+      "jaccard_stderr,none": "N/A"
+    },
+    "mammalps_animal": {
+      "alias": " - mammalps_animal",
+      "jaccard,none": 0.3333333333333333,
+      "jaccard_stderr,none": "N/A"
+    }
+  },
+  "group_subtasks": {
+    "mammalps": [
+      "mammalps_animal",
+      "mammalps_action",
+      "mammalps_activity"
+    ]
+  },
+  "configs": {
+    "mammalps_action": {
+      "task": "mammalps_action",
+      "tag": "mammalps",
+      "group": "mammalps",
+      "dataset_path": "luciehmct/mammalps",
+      "dataset_name": "default",
+      "test_split": "test",
+      "full_docs": false,
+      "process_results_use_image": false,
+      "doc_to_visual": "<function mammalps_doc_to_visual at 0x748d49793760>",
+      "doc_to_text": "<function mammalps_doc_to_text at 0x748d497d1120>",
+      "doc_to_target": "<function mammalps_doc_to_target at 0x748d497d0d30>",
+      "process_results": "<function mammalps_process_results at 0x748d497d0670>",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "jaccard",
+          "aggregation": "<function mammalps_jaccard_aggregation at 0x748d497d16c0>",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "<|im_end|>"
+        ],
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_new_tokens": 512,
+        "do_sample": false
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0
+      },
+      "lmms_eval_specific_kwargs": {
+        "subtask": "action"
+      }
+    },
+    "mammalps_activity": {
+      "task": "mammalps_activity",
+      "tag": "mammalps",
+      "group": "mammalps",
+      "dataset_path": "luciehmct/mammalps",
+      "dataset_name": "default",
+      "test_split": "test",
+      "full_docs": false,
+      "process_results_use_image": false,
+      "doc_to_visual": "<function mammalps_doc_to_visual at 0x748d54873ac0>",
+      "doc_to_text": "<function mammalps_doc_to_text at 0x748d54873eb0>",
+      "doc_to_target": "<function mammalps_doc_to_target at 0x748d5489c430>",
+      "process_results": "<function mammalps_process_results at 0x748d5489caf0>",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "jaccard",
+          "aggregation": "<function mammalps_jaccard_aggregation at 0x748d5489d120>",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "<|im_end|>"
+        ],
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_new_tokens": 512,
+        "do_sample": false
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0
+      },
+      "lmms_eval_specific_kwargs": {
+        "subtask": "activity"
+      }
+    },
+    "mammalps_animal": {
+      "task": "mammalps_animal",
+      "tag": "mammalps",
+      "group": "mammalps",
+      "dataset_path": "luciehmct/mammalps",
+      "dataset_name": "default",
+      "test_split": "test",
+      "full_docs": false,
+      "process_results_use_image": false,
+      "doc_to_visual": "<function mammalps_doc_to_visual at 0x748d497d2b00>",
+      "doc_to_text": "<function mammalps_doc_to_text at 0x748d497d25f0>",
+      "doc_to_target": "<function mammalps_doc_to_target at 0x748d497d1fc0>",
+      "process_results": "<function mammalps_process_results at 0x748d497d17e0>",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "jaccard",
+          "aggregation": "<function mammalps_jaccard_aggregation at 0x748d497d3370>",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "<|im_end|>"
+        ],
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_new_tokens": 512,
+        "do_sample": false
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0
+      },
+      "lmms_eval_specific_kwargs": {
+        "subtask": "animal"
+      }
+    }
+  },
+  "versions": {
+    "mammalps_action": 1.0,
+    "mammalps_activity": 1.0,
+    "mammalps_animal": 1.0
+  },
+  "n-shot": {
+    "mammalps_action": 0,
+    "mammalps_activity": 0,
+    "mammalps_animal": 0
+  },
+  "higher_is_better": {
+    "mammalps": {
+      "jaccard": true
+    },
+    "mammalps_action": {
+      "jaccard": true
+    },
+    "mammalps_activity": {
+      "jaccard": true
+    },
+    "mammalps_animal": {
+      "jaccard": true
+    }
+  },
+  "n-samples": {
+    "mammalps_animal": {
+      "original": 1244,
+      "effective": 3
+    },
+    "mammalps_action": {
+      "original": 1244,
+      "effective": 3
+    },
+    "mammalps_activity": {
+      "original": 1244,
+      "effective": 3
+    }
+  },
+  "config": {
+    "model": "internvl3",
+    "model_args": "pretrained=OpenGVLab/InternVL3-8B,modality=video,num_frame=8,use_temporal_context=True,max_dynamic_patch=6,use_thumbnail=True",
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": null,
+    "use_cache": null,
+    "limit": 3.0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": "",
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "b3ea01e",
+  "date": "20250821_173000",
+  "task_hashes": {
+    "mammalps_animal": "d7f4d58a8e095df652c09f18e49907ec347e15c88143ebf84f9e14d2bb258afc",
+    "mammalps_action": "3f50046c631d1724930d837690d549aec48d38de1b7a9fb1370b72a36a3f5503",
+    "mammalps_activity": "3e7d7b5b44572c415746cee1af014eb4af092bc17aa3a92e09fa79f380081853"
+  },
+  "model_source": "internvl3",
+  "model_name": "OpenGVLab/InternVL3-8B",
+  "model_name_sanitized": "OpenGVLab__InternVL3-8B",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": false,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "start_time": 5018236.476165547,
+  "end_time": 5018349.433281088,
+  "total_evaluation_time_seconds": "112.95711554121226"
+}
