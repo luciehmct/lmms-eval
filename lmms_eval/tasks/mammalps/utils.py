@@ -345,6 +345,13 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
         # Filter out entity type parameters that are not actual answers
         "animal", "action", "activity"
     ]
+    
+    # Add animal names to filter for activity tasks
+    if subtask == "activity":
+        artifacts_to_filter.extend([
+            "deer", "elk", "moose", "bear", "wolf", "fox", "rabbit", "squirrel", "bird", "cat", "dog",
+            "red_deer", "roe_deer", "wild_boar", "lynx", "badger", "otter", "marten", "weasel"
+        ])
 
     # Try to extract from "Final answer: ['item1', 'item2']" format
     final_answer_match = re.search(r"Final answer:\s*\[([^\]]*)\]", response, re.IGNORECASE | re.DOTALL)
@@ -353,6 +360,11 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
             # Get the content inside the brackets
             bracket_content = final_answer_match.group(1).strip()
             if bracket_content:
+                # Handle malformed extractions like "': ['foraging"]", "': ['grazing"]
+                # Clean up common malformations first
+                bracket_content = re.sub(r"^['\"\s:]+", "", bracket_content)  # Remove leading quotes/colons
+                bracket_content = re.sub(r"['\"\s]+$", "", bracket_content)   # Remove trailing quotes
+                
                 # Split by comma and clean up each item
                 items = [item.strip().strip("'\"") for item in bracket_content.split(",")]
                 # Comprehensive filtering - remove artifacts, empty items, and invalid content
@@ -360,17 +372,22 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
                 for item in items:
                     item = item.strip()
                     
+                    # Remove any leading/trailing quotes, colons, or whitespace
+                    item = re.sub(r"^['\"\s:]+", "", item)
+                    item = re.sub(r"['\"\s:]+$", "", item)
+                    
                     # Special handling for malformed "Final answer: xxx" inside brackets
                     if item.lower().startswith("final answer:"):
                         # Extract the part after "Final answer:"
                         item = item[13:].strip()  # Remove "Final answer:" prefix
+                        item = re.sub(r"^['\"\s:]+", "", item)  # Clean again
                     
                     # Check if item is valid (not an artifact and reasonable length)
                     if (item and len(item) > 2 and 
                         not any(artifact in item.lower() for artifact in artifacts_to_filter) and
                         not item.endswith("(") and not item.startswith("(") and
                         not re.match(r'^[^a-zA-Z]*$', item)):  # Not just symbols/numbers
-                        predicted_labels.append(item)
+                        predicted_labels.append(item.lower())  # Normalize to lowercase
                 eval_logger.debug(f"Extracted via final_answer format: {predicted_labels}")
         except Exception as e:
             eval_logger.warning(f"Warning: Failed to parse final_answer content: {e}")
@@ -390,16 +407,21 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
                 for item in items:
                     item = item.strip()
                     
+                    # Remove any leading/trailing quotes, colons, or whitespace
+                    item = re.sub(r"^['\"\s:]+", "", item)
+                    item = re.sub(r"['\"\s:]+$", "", item)
+                    
                     # Special handling for malformed "Final answer: xxx" inside brackets
                     if item.lower().startswith("final answer:"):
                         # Extract the part after "Final answer:"
                         item = item[13:].strip()  # Remove "Final answer:" prefix
+                        item = re.sub(r"^['\"\s:]+", "", item)  # Clean again
                     
                     if (item and len(item) > 2 and 
                         not any(artifact in item.lower() for artifact in artifacts_to_filter) and
                         not item.endswith("(") and not item.startswith("(") and
                         not re.match(r'^[^a-zA-Z]*$', item)):
-                        predicted_labels.append(item)
+                        predicted_labels.append(item.lower())  # Normalize to lowercase
                 eval_logger.debug(f"Fallback: Extracted via list format: {predicted_labels}")
 
     # Final fallback: try to extract individual quoted items if still no results
