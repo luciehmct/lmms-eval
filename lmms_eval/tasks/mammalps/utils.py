@@ -5,209 +5,6 @@ import json
 from loguru import logger as eval_logger
 
 
-def extract_final_answer(response, subtask="animal", artifacts_to_filter=None):
-    """Enhanced function to extract final answers from model responses with robust parsing.
-    
-    Handles various edge cases including:
-    - LaTeX formatting (\\boxed{...})
-    - Escaped characters
-    - Implicit answers without "Final answer:" prefix
-    - Multiple bracket formats
-    - Malformed responses
-    
-    Args:
-        response (str): The model response to parse
-        subtask (str): The task type ('animal', 'action', 'activity') for context-specific filtering
-        artifacts_to_filter (list): Additional artifacts to filter out
-        
-    Returns:
-        list: Extracted and cleaned labels
-    """
-    if not isinstance(response, str) or not response.strip():
-        eval_logger.warning("Empty or invalid response provided to extract_final_answer")
-        return []
-    
-    # Default artifacts to filter out
-    default_artifacts = [
-        "s execute", "```python", "recognize(", "entity_type", "def ", "return", "import", "from ", "print(", "Example:",
-        "python", "code", "function", "list", "str", "List", "str", "Optional", "execute", "```", "final answer",
-        # Filter out entity type parameters that are not actual answers
-        "animal", "action", "activity"
-    ]
-    
-    # Add animal names to filter for activity tasks
-    if subtask == "activity":
-        default_artifacts.extend([
-            "deer", "elk", "moose", "bear", "wolf", "fox", "rabbit", "squirrel", "bird", "cat", "dog",
-            "red_deer", "roe_deer", "wild_boar", "lynx", "badger", "otter", "marten", "weasel"
-        ])
-    
-    # Combine with any additional artifacts
-    all_artifacts = default_artifacts + (artifacts_to_filter or [])
-    
-    def clean_item(item):
-        """Clean and validate a single extracted item"""
-        if not item:
-            return None
-            
-        # Remove leading/trailing whitespace and quotes
-        item = item.strip().strip('"\'')
-        
-        # Handle LaTeX boxed formatting
-        latex_match = re.search(r'\\boxed\{([^}]+)\}', item)
-        if latex_match:
-            item = latex_match.group(1).strip()
-        
-        # Remove any remaining LaTeX artifacts
-        item = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', item)  # Remove \command{content} -> content
-        item = re.sub(r'\\[a-zA-Z]+', '', item)  # Remove standalone \commands
-        
-        # Handle escaped characters
-        item = item.replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\')
-        
-        # Remove leading/trailing punctuation and colons
-        item = re.sub(r'^[:\s,;.-]+', '', item)
-        item = re.sub(r'[:\s,;.-]+$', '', item)
-        
-        # Final cleanup
-        item = item.strip().strip('"\'')
-        
-        # Validate item
-        if (item and len(item) > 1 and 
-            not any(artifact.lower() in item.lower() for artifact in all_artifacts) and
-            not item.endswith("(") and not item.startswith("(") and
-            not re.match(r'^[^a-zA-Z]*$', item) and  # Not just symbols/numbers
-            len(item) < 100):  # Reasonable length limit
-            return item.lower()  # Normalize to lowercase
-        return None
-    
-    predicted_labels = []
-    
-    eval_logger.debug(f"extract_final_answer input: {repr(response[:200])}")
-    
-    # Strategy 1: Look for "Final answer:" with various bracket formats
-    final_answer_patterns = [
-        r"final answer:\s*\[([^\]]*)\]",  # Final answer: [...]
-        r"final answer:\s*\\boxed\{([^}]*)\}",  # Final answer: \boxed{...}
-        r"final answer:\s*\{([^}]*)\}",  # Final answer: {...}
-        r"final answer:\s*\(([^)]*)\)",  # Final answer: (...)
-        r"final answer[:\s]*([^\n]*)",   # Final answer: anything till newline
-    ]
-    
-    for pattern in final_answer_patterns:
-        matches = re.finditer(pattern, response, re.IGNORECASE | re.DOTALL)
-        for match in matches:
-            content = match.group(1).strip()
-            if content:
-                # Handle list-like content
-                if any(sep in content for sep in [',', ';', '|']):
-                    # Split by common separators
-                    items = re.split(r'[,;|]', content)
-                    for item in items:
-                        cleaned = clean_item(item)
-                        if cleaned and cleaned not in predicted_labels:
-                            predicted_labels.append(cleaned)
-                else:
-                    # Single item
-                    cleaned = clean_item(content)
-                    if cleaned and cleaned not in predicted_labels:
-                        predicted_labels.append(cleaned)
-                
-                if predicted_labels:
-                    eval_logger.debug(f"Extracted via final_answer pattern '{pattern}': {predicted_labels}")
-                    break
-        if predicted_labels:
-            break
-    
-    # Strategy 2: Look for bracket structures without "Final answer:" prefix
-    if not predicted_labels:
-        bracket_patterns = [
-            r'\[([^\]]+)\]',  # [...]
-            r'\\boxed\{([^}]+)\}',  # \boxed{...}
-            r'\{([^}]+)\}',  # {...}
-        ]
-        
-        for pattern in bracket_patterns:
-            matches = re.finditer(pattern, response)
-            for match in matches:
-                content = match.group(1).strip()
-                if content and ('"' in content or "'" in content or ',' in content):
-                    # Only process if it looks like a list
-                    items = re.split(r'[,;|]', content)
-                    temp_labels = []
-                    for item in items:
-                        cleaned = clean_item(item)
-                        if cleaned and cleaned not in temp_labels:
-                            temp_labels.append(cleaned)
-                    
-                    if temp_labels:
-                        predicted_labels = temp_labels
-                        eval_logger.debug(f"Extracted via bracket pattern '{pattern}': {predicted_labels}")
-                        break
-            if predicted_labels:
-                break
-    
-    # Strategy 3: Look for quoted items (more conservative fallback)
-    if not predicted_labels:
-        # Only if response doesn't seem incomplete
-        response_seems_incomplete = (
-            response.strip().endswith("```") or 
-            response.strip().endswith("recognize('animal')") or
-            response.strip().endswith("recognize('action')") or
-            response.strip().endswith("recognize('activity')") or
-            len(response.strip()) < 20
-        )
-        
-        if not response_seems_incomplete:
-            quoted_items = re.findall(r'["\']([^"\']{2,50})["\']', response)
-            for item in quoted_items:
-                cleaned = clean_item(item)
-                if cleaned and cleaned not in predicted_labels:
-                    predicted_labels.append(cleaned)
-            
-            if predicted_labels:
-                eval_logger.debug(f"Extracted via quoted items: {predicted_labels}")
-    
-    # Strategy 4: Look for implicit answers (lines that look like answers)
-    if not predicted_labels:
-        # Look for lines that might be implicit answers
-        lines = response.split('\n')
-        for line in lines:
-            line = line.strip()
-            # Skip obvious non-answer lines
-            if (line and not line.startswith(('#', '//', '/*', 'def ', 'import', 'from ')) and
-                not any(artifact.lower() in line.lower() for artifact in default_artifacts[:10]) and
-                len(line) > 2 and len(line) < 50):
-                
-                # Check if line contains potential answers
-                if any(sep in line for sep in [',', ';', 'and ', 'or ']):
-                    # Split potential multi-item lines
-                    items = re.split(r'[,;]|\s+and\s+|\s+or\s+', line)
-                    for item in items:
-                        cleaned = clean_item(item)
-                        if cleaned and cleaned not in predicted_labels:
-                            predicted_labels.append(cleaned)
-                else:
-                    # Single potential answer
-                    cleaned = clean_item(line)
-                    if cleaned and cleaned not in predicted_labels:
-                        predicted_labels.append(cleaned)
-        
-        if predicted_labels:
-            eval_logger.debug(f"Extracted via implicit answers: {predicted_labels}")
-    
-    # Remove duplicates while preserving order
-    unique_labels = []
-    seen = set()
-    for label in predicted_labels:
-        if label not in seen:
-            unique_labels.append(label)
-            seen.add(label)
-    
-    eval_logger.debug(f"extract_final_answer result: {unique_labels}")
-    return unique_labels
-
-
 def mammalps_doc_to_visual(doc, lmms_eval_specific_kwargs=None):
     """Extract visual information from the document, downloading it from HuggingFace if necessary.
 
@@ -401,8 +198,33 @@ def mammalps_jaccard_metric(predictions, references):
         response = predictions
 
     if isinstance(response, str):
-        # Use the enhanced extract_final_answer function
-        predicted_labels = extract_final_answer(response)
+        # Use restrictive pattern matching (same as process_results)
+        predicted_labels = []
+        
+        # Try to extract from "Final answer: ['item1', 'item2']" format
+        final_answer_match = re.search(r"Final answer:\s*(\[.*?\])", response, re.IGNORECASE | re.DOTALL)
+        if final_answer_match:
+            try:
+                predicted_labels = eval(final_answer_match.group(1))
+                if isinstance(predicted_labels, list):
+                    predicted_labels = [str(label).strip() for label in predicted_labels]
+                    eval_logger.debug(f"mammalps_jaccard_metric extracted via final_answer format: {predicted_labels}")
+            except Exception as e:
+                eval_logger.warning(f"Failed to eval final_answer match: {e}")
+
+        # Fallback: try to extract any list-like structure
+        if not predicted_labels:
+            list_match = re.search(r"\[([^\]]+)\]", response)
+            if list_match:
+                content = list_match.group(1)
+                # Split by comma and clean up
+                predicted_labels = [item.strip().strip("'\"") for item in content.split(",")]
+                eval_logger.debug(f"mammalps_jaccard_metric extracted via list format: {predicted_labels}")
+
+        if not predicted_labels:
+            eval_logger.warning("mammalps_jaccard_metric: No labels extracted from response! Using empty list.")
+            predicted_labels = []
+        
         eval_logger.debug(f"mammalps_jaccard_metric extracted: {predicted_labels}")
     else:
         # If predictions is already a list, use it directly
@@ -492,10 +314,35 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
     eval_logger.debug(f"question_id: {doc.get('id', 'Unknown')}")
     eval_logger.debug(f"Full response: {repr(response)}")
 
-    # Extract list from response using enhanced parsing function
-    predicted_labels = extract_final_answer(response, subtask)
+    # Extract list from response - look for "Final answer:" pattern first
+    predicted_labels = []
     
     eval_logger.debug(f"Raw response for parsing: {repr(response[:500])}")  # Log first 500 chars for debugging
+
+    # Try to extract from "Final answer: ['item1', 'item2']" format
+    final_answer_match = re.search(r"Final answer:\s*(\[.*?\])", response, re.IGNORECASE | re.DOTALL)
+    if final_answer_match:
+        try:
+            predicted_labels = eval(final_answer_match.group(1))
+            if isinstance(predicted_labels, list):
+                predicted_labels = [str(label).strip() for label in predicted_labels]
+                eval_logger.debug(f"Extracted via final_answer format: {predicted_labels}")
+        except Exception as e:
+            eval_logger.warning(f"Warning: Failed to eval final_answer match: {e}")
+
+    # Fallback: try to extract any list-like structure
+    if not predicted_labels:
+        list_match = re.search(r"\[([^\]]+)\]", response)
+        if list_match:
+            content = list_match.group(1)
+            # Split by comma and clean up
+            predicted_labels = [item.strip().strip("'\"") for item in content.split(",")]
+            eval_logger.debug(f"Fallback : Extracted via list format: {predicted_labels}")
+
+    if not predicted_labels:
+        eval_logger.warning("Warning: No labels extracted from response! Returning empty list.")
+        predicted_labels = []
+
     eval_logger.debug(f"Final extracted labels: {predicted_labels}")
 
     # Compute jaccard score directly since we have both prediction and target

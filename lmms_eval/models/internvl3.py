@@ -326,6 +326,7 @@ class InternVL3(lmms):
         # Load the model with trust_remote_code=True for InternVL3
         self._model = AutoModel.from_pretrained(
             self.path,
+            revision="26dcadeb50cde4369918519c760feb2946814e10",
             torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
@@ -334,6 +335,7 @@ class InternVL3(lmms):
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.path,
+            revision="26dcadeb50cde4369918519c760feb2946814e10",
             trust_remote_code=True,
             use_fast=False,  # InternVL3 recommendation
         )
