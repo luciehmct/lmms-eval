@@ -1,6 +1,6 @@
 group: mammalps
 task: mammalps_animal
-dataset_path: luciehmct/mammalps-test-recognition
+dataset_path: luciehmct/mammalps
 test_split: test
 output_type: generate_until
 doc_to_visual: !function utils.mammalps_doc_to_visual

@@ -501,6 +501,43 @@ class InternVL3(lmms):
                 eval_logger.debug(f"DEBUG: ----END----")
                 eval_logger.debug(f"DEBUG: ================================")
 
+                # Save enhanced prompt with timestamps for utils.py to access
+                if hasattr(self, "use_temporal_context") and self.use_temporal_context:
+                    try:
+                        # Save the enhanced prompt to a cache file that utils.py can read
+                        prompt_cache_file = "mammalps_enhanced_prompts.json"
+                        prompt_cache = {}
+                        
+                        # Load existing cache if it exists
+                        if os.path.exists(prompt_cache_file):
+                            try:
+                                with open(prompt_cache_file, "r", encoding="utf-8") as f:
+                                    prompt_cache = json.load(f)
+                            except Exception:
+                                prompt_cache = {}
+                        
+                        # Create cache key from document info
+                        doc = self.task_dict[task][split][doc_id]
+                        cache_key = f"{doc.get('id', doc_id)}"
+                        
+                        # Store the enhanced prompt
+                        prompt_cache[cache_key] = {
+                            "original_prompt": contexts,
+                            "enhanced_prompt_with_timestamps": question,
+                            "video_length": video_length,
+                            "frame_timestamps": image_times,
+                            "num_frames": len(num_patches_list)
+                        }
+                        
+                        # Save back to cache file
+                        with open(prompt_cache_file, "w", encoding="utf-8") as f:
+                            json.dump(prompt_cache, f, ensure_ascii=False, indent=2)
+                        
+                        eval_logger.debug(f"DEBUG: Saved enhanced prompt to cache for doc_id: {cache_key}")
+                        
+                    except Exception as e:
+                        eval_logger.debug(f"DEBUG: Failed to save enhanced prompt to cache: {e}")
+
                 response, history = self.model.chat(
                     self.tokenizer,
                     pixel_values,
