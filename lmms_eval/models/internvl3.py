@@ -172,47 +172,50 @@ def get_index(bound, fps, max_frame, first_idx=0, num_segments=32):
     return frame_indices
 
 
-def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32):
-    """Load and preprocess the input video.
-
+def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32, use_adaptive_sampling=False, query=None):
+    """Load and preprocess the input video - matching internvl_utils.py implementation
+    
     Args:
         video_path (str): The path to the video file.
         bound (tuple, optional): The start and end time bounds for the segment. Defaults to None.
         input_size (int, optional): The size of the video frames after resizing. Defaults to 448.
         max_num (int, optional): The maximum number of patches to create. Defaults to 6.
         num_segments (int, optional): The number of segments to divide the video into. Defaults to 32.
+        use_adaptive_sampling (bool, optional): Whether to use adaptive keyframe sampling. Defaults to False.
+        query (str, optional): The query for adaptive sampling. Defaults to None.
 
     Returns:
-        torch.Tensor: The preprocessed video tensor.
+        tuple: (pixel_values, num_patches_list, frame_times, video_length)
     """
     vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
     max_frame = len(vr) - 1
     fps = float(vr.get_avg_fps())
-
-    # Calculate video duration
     video_length = len(vr) / fps
 
-    pixel_values_list, num_patches_list = [], []
+    pixel_values_list, num_patches_list, frame_times = [], [], []
     transform = build_transform(input_size=input_size)
-    frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
-
-    # Calculate timestamps for each selected frame
-    image_times = []
-    for frame_index in frame_indices:
-        timestamp = frame_index / fps
-        image_times.append(timestamp)
+    
+    # Frame selection - match internvl_utils.py logic
+    if use_adaptive_sampling and query:
+        # For now, fall back to uniform sampling (adaptive sampling can be added later)
+        frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
+    else:
+        frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
 
     eval_logger.debug(f"DEBUG: load_video - video_path: {video_path}, total_frames: {len(vr)}, requested_segments: {num_segments}, selected_indices: {len(frame_indices)}, video_length: {video_length:.2f}s")
 
+    # Process frames exactly like internvl_utils.py
     for frame_index in frame_indices:
         img = Image.fromarray(vr[frame_index].asnumpy()).convert("RGB")
-        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=False, max_num=max_num)
+        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)  # Note: use_thumbnail=True like baseline
         pixel_values = [transform(tile) for tile in img]
         pixel_values = torch.stack(pixel_values)
         num_patches_list.append(pixel_values.shape[0])
         pixel_values_list.append(pixel_values)
+        frame_times.append(frame_index / fps)  # Match internvl_utils.py naming
+
     pixel_values = torch.cat(pixel_values_list)
-    return pixel_values, num_patches_list, image_times, video_length
+    return pixel_values, num_patches_list, frame_times, video_length  # Return frame_times instead of image_times
 
 
 def split_model(model_name, num_layers=None):
@@ -361,12 +364,13 @@ class InternVL3(lmms):
 
         self.modality = modality
 
-        # Initialize debug log file
+        # Initialize debug log file (disabled to avoid unwanted files)
         self.debug_log_file = None
-        if hasattr(self, "use_temporal_context") and self.use_temporal_context:
-            # Create debug log file in the current working directory
-            self.debug_log_file = f"mammalps_debug_prompts_{os.getpid()}.jsonl"
-            eval_logger.debug(f"Debug prompts will be saved to: {self.debug_log_file}")
+        # Commenting out debug file creation since user doesn't want these files
+        # if hasattr(self, "use_temporal_context") and self.use_temporal_context:
+        #     # Create debug log file in the current working directory
+        #     self.debug_log_file = f"mammalps_debug_prompts_{os.getpid()}.jsonl"
+        #     eval_logger.debug(f"Debug prompts will be saved to: {self.debug_log_file}")
 
     @property
     def config(self):
@@ -464,27 +468,37 @@ class InternVL3(lmms):
             elif self.modality == "video":
                 assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
                 video_path = visuals[0]
-                pixel_values, num_patches_list, image_times, video_length = load_video(
+                pixel_values, num_patches_list, frame_times, video_length = load_video(
                     video_path,
+                    bound=None,
+                    input_size=448,
+                    max_num=self.max_num,  # Use the configured max_num
                     num_segments=self.num_frame,
-                    max_num=6,
+                    use_adaptive_sampling=False,  # Can be made configurable
+                    query=contexts  # Pass the query for potential adaptive sampling
                 )
                 pixel_values = pixel_values.to(torch.bfloat16).cuda()
 
                 # DEBUG: Print actual frame count and temporal info
                 eval_logger.debug(f"DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
-                eval_logger.debug(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in image_times[:5]]}{'...' if len(image_times) > 5 else ''}")
+                eval_logger.debug(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in frame_times[:5]]}{'...' if len(frame_times) > 5 else ''}")
 
-                # Create enhanced video prefix with temporal information
+                # Create enhanced video prefix with temporal information - match animal_dataset.py format
                 if hasattr(self, "use_temporal_context") and self.use_temporal_context:
-                    # Enhanced version with timestamps and video duration
-                    special_tokens = "\n".join(["Frame-{} at second {:.2f}: <image>".format(i + 1, image_times[i]) for i in range(len(num_patches_list))])
-                    video_prefix = "The video is {:.2f} second(s) long and you can see the frames below:\n".format(video_length) + special_tokens + "\n"
-                    # Replace <video> placeholder if present, otherwise prepend
-                    if "<video>" in contexts:
-                        question = contexts.replace("<video>\n", video_prefix)
-                    else:
-                        question = video_prefix + contexts
+                    # Match exact format from animal_dataset.py
+                    special_tokens = "\n".join([
+                        "Frame-{} at second {:.2f}: <image>".format(i + 1, frame_times[i])
+                        for i in range(len(num_patches_list))
+                    ])
+                    special_tokens = (
+                        "The video is {:.2f} second(s) long and you can see the frames below:\n".format(video_length)
+                        + special_tokens
+                    )
+                    # Replace <video>\n exactly like animal_dataset.py
+                    question = contexts.replace("<video>\n", special_tokens + "\n")
+                    # Also handle case without newline for robustness
+                    if "<video>" in question and "<video>\n" not in contexts:
+                        question = contexts.replace("<video>", special_tokens + "\n")
                 else:
                     # Standard version (current implementation)
                     video_prefix = "".join([f"Frame{i + 1}: <image>\n" for i in range(len(num_patches_list))])
@@ -525,7 +539,7 @@ class InternVL3(lmms):
                             "original_prompt": contexts,
                             "enhanced_prompt_with_timestamps": question,
                             "video_length": video_length,
-                            "frame_timestamps": image_times,
+                            "frame_timestamps": frame_times,
                             "num_frames": len(num_patches_list)
                         }
                         
@@ -599,7 +613,7 @@ class InternVL3(lmms):
                             "task": task,
                             "video_length_seconds": video_length,
                             "num_frames": len(num_patches_list),
-                            "frame_timestamps": image_times,
+                            "frame_timestamps": frame_times,
                             "question": question,
                             "answer": filtered_answer,  # Extracted final answer list
                             "ground_truth": ground_truth,
