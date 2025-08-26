@@ -405,14 +405,16 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
             "jaccard_score": jaccard_score
         }
         
-        # Create model_used_date_time directory structure
+        # Create model_used_date_time directory structure in results directory
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         model_name = "InternVL3-8B"  # Can be made configurable if needed
-        output_dir = f"{model_name}_{timestamp}"
+        
+        # Use results directory in the lmms-eval repository
+        results_base_dir = os.path.join(os.getcwd(), "results")
+        output_dir = os.path.join(results_base_dir, f"{model_name}_{timestamp}")
         
         # Create directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
         os.makedirs(output_dir, exist_ok=True)
         
         # Save to subtask-specific JSONL file in the structured directory
