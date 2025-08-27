@@ -96,6 +96,7 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
                 return_overflowing_tokens=True,
             ).to(device)
             overflow = text_inputs.pop("overflowing_tokens", None)
+            text_inputs.pop("num_truncated_tokens", None)
             if overflow is not None and overflow.numel() > 0:
                 logging.warning("⚠️ query truncated to 77 tokens for CLIP")
             with torch.no_grad():
