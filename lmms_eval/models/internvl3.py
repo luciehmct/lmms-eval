@@ -2,6 +2,7 @@ import logging
 import math
 import json
 import os
+import random
 from datetime import timedelta
 from typing import List, Tuple
 
@@ -26,10 +27,21 @@ eval_logger = logging.getLogger("eval_logger")
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
+# Set global seeds for reproducibility
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 DEFAULT_GEN_KWARGS = dict(
     num_beams=1,
     max_new_tokens=1024,
     do_sample=False,
+    temperature=0.0,
+    top_p=1.0,
+    top_k=1,
+    repetition_penalty=1.0,
 )
 
 
@@ -429,16 +441,7 @@ class InternVL3(lmms):
             if "until" in gen_kwargs:
                 gen_kwargs.pop("until")
             for k, v in DEFAULT_GEN_KWARGS.items():
-                if k not in gen_kwargs:
-                    gen_kwargs[k] = v
-
-            pop_keys = []
-            for k, v in gen_kwargs.items():
-                if k not in DEFAULT_GEN_KWARGS:
-                    pop_keys.append(k)
-
-            for k in pop_keys:
-                gen_kwargs.pop(k)
+                gen_kwargs.setdefault(k, v)
 
             visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
             visuals = self.flatten(visuals)
