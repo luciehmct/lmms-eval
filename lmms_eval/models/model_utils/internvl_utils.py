@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import torch
 from PIL import Image
@@ -38,15 +39,20 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
 
         # Prefer a fast image processor but fall back to the slow version when necessary
         def _load_processor(model_name: str):
+            from transformers.utils import logging as hf_logging
+
+            hf_logging.set_verbosity_error()
             try:
                 proc = CLIPProcessor.from_pretrained(model_name, use_fast=True)
                 if not hasattr(proc.image_processor, "_valid_processor_keys"):
                     raise AttributeError
-                return proc
-            except Exception:
-                print("⚠️ Fast image processor unsupported; using slow version")
-                return CLIPProcessor.from_pretrained(model_name, use_fast=False)
+            except AttributeError:
+                logging.warning(
+                    "⚠️ Fast image processor unsupported; using slow version"
+                )
+                proc = CLIPProcessor.from_pretrained(model_name, use_fast=False)
 
+            return proc
         # Try multiple approaches to load CLIP safely
         try:
             model = CLIPModel.from_pretrained(
@@ -89,8 +95,9 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
                 max_length=77,
                 return_overflowing_tokens=True,
             ).to(device)
-            if text_inputs.get("overflowing_tokens"):
-                print("!! query truncated to 77 tokens for CLIP")
+            overflow = text_inputs.pop("overflowing_tokens", None)
+            if overflow is not None and overflow.numel() > 0:
+                logging.warning("⚠️ query truncated to 77 tokens for CLIP")
             with torch.no_grad():
                 text_features = model.get_text_features(**text_inputs)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
