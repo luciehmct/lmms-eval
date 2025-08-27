@@ -2,6 +2,7 @@ import logging
 import math
 import json
 import os
+import random
 from datetime import timedelta
 from typing import List, Tuple
 
@@ -17,6 +18,8 @@ from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+from .model_utils.internvl_utils import adaptive_keyframe_sampling
+
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
@@ -26,10 +29,21 @@ eval_logger = logging.getLogger("eval_logger")
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
+# Set global seeds for reproducibility
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 DEFAULT_GEN_KWARGS = dict(
     num_beams=1,
     max_new_tokens=1024,
     do_sample=False,
+    temperature=0.0,
+    top_p=1.0,
+    top_k=1,
+    repetition_penalty=1.0,
 )
 
 
@@ -172,7 +186,7 @@ def get_index(bound, fps, max_frame, first_idx=0, num_segments=32):
     return frame_indices
 
 
-def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32, use_adaptive_sampling=False, query=None):
+def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=32, use_adaptive_sampling=True, query=None):
     """Load and preprocess the input video - matching internvl_utils.py implementation
     
     Args:
@@ -181,7 +195,7 @@ def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=3
         input_size (int, optional): The size of the video frames after resizing. Defaults to 448.
         max_num (int, optional): The maximum number of patches to create. Defaults to 6.
         num_segments (int, optional): The number of segments to divide the video into. Defaults to 32.
-        use_adaptive_sampling (bool, optional): Whether to use adaptive keyframe sampling. Defaults to False.
+        use_adaptive_sampling (bool, optional): Whether to use adaptive keyframe sampling. Defaults to True.
         query (str, optional): The query for adaptive sampling. Defaults to None.
 
     Returns:
@@ -197,17 +211,16 @@ def load_video(video_path, bound=None, input_size=448, max_num=6, num_segments=3
     
     # Frame selection - match internvl_utils.py logic
     if use_adaptive_sampling and query:
-        # For now, fall back to uniform sampling (adaptive sampling can be added later)
-        frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
+        frame_indices = adaptive_keyframe_sampling(video_path, num_segments, query)
     else:
         frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
 
     eval_logger.debug(f"DEBUG: load_video - video_path: {video_path}, total_frames: {len(vr)}, requested_segments: {num_segments}, selected_indices: {len(frame_indices)}, video_length: {video_length:.2f}s")
 
-    # Process frames exactly like internvl_utils.py
+    # Process frames like workshop
     for frame_index in frame_indices:
         img = Image.fromarray(vr[frame_index].asnumpy()).convert("RGB")
-        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)  # Note: use_thumbnail=True like baseline
+        img = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)  # Note: use_thumbnail=True like workshop
         pixel_values = [transform(tile) for tile in img]
         pixel_values = torch.stack(pixel_values)
         num_patches_list.append(pixel_values.shape[0])
@@ -474,7 +487,7 @@ class InternVL3(lmms):
                     input_size=448,
                     max_num=self.max_num,  # Use the configured max_num
                     num_segments=self.num_frame,
-                    use_adaptive_sampling=False,  # Can be made configurable
+                    use_adaptive_sampling=True,  # Can be made configurable
                     query=contexts  # Pass the query for potential adaptive sampling
                 )
                 pixel_values = pixel_values.to(torch.bfloat16).cuda()
@@ -483,7 +496,7 @@ class InternVL3(lmms):
                 eval_logger.debug(f"DEBUG: Video processing - requested frames: {self.num_frame}, actual frames: {len(num_patches_list)}, patches per frame: {num_patches_list}")
                 eval_logger.debug(f"DEBUG: Video temporal info - video_length: {video_length:.2f}s, frame_timestamps: {[f'{t:.2f}s' for t in frame_times[:5]]}{'...' if len(frame_times) > 5 else ''}")
 
-                # Create enhanced video prefix with temporal information - match animal_dataset.py format
+                # Create enhanced video prefix with temporal information
                 if hasattr(self, "use_temporal_context") and self.use_temporal_context:
                     # Match exact format from animal_dataset.py
                     special_tokens = "\n".join([
@@ -561,73 +574,6 @@ class InternVL3(lmms):
                     history=None,
                     return_history=True,
                 )
-
-                # Save debug information to JSONL file
-                if self.debug_log_file:
-                    try:
-                        # Get document information
-                        doc = self.task_dict[task][split][doc_id]
-
-                        # Extract ground truth based on task
-                        ground_truth = []
-                        if "action" in task:
-                            ground_truth = doc.get("action", [])
-                        elif "activity" in task:
-                            ground_truth = doc.get("activity", [])
-                        elif "animal" in task:
-                            ground_truth = doc.get("animal", [])
-
-                        # Extract the filtered answer from the full response
-                        import re
-
-                        filtered_answer = []
-
-                        # Try to extract from "Final answer: ['item1', 'item2']" format
-                        final_answer_match = re.search(
-                            r"Final answer:\s*(\[.*?\])",
-                            response,
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                        if final_answer_match:
-                            try:
-                                filtered_answer = eval(final_answer_match.group(1))
-                                if isinstance(filtered_answer, list):
-                                    filtered_answer = [str(label).strip() for label in filtered_answer]
-                            except Exception as e:
-                                print(f"DEBUG: Failed to parse final answer: {e}")
-                                filtered_answer = []
-
-                        # Fallback: try to extract any list-like structure
-                        if not filtered_answer:
-                            list_match = re.search(r"\[([^\]]+)\]", response)
-                            if list_match:
-                                content = list_match.group(1)
-                                # Split by comma and clean up
-                                filtered_answer = [item.strip().strip("'\"") for item in content.split(",")]
-
-                        # Create debug entry
-                        debug_entry = {
-                            "dataset": "mammalps",
-                            "video_id": doc.get("clip", "unknown"),
-                            "question_id": doc.get("id", doc_id),
-                            "task": task,
-                            "video_length_seconds": video_length,
-                            "num_frames": len(num_patches_list),
-                            "frame_timestamps": frame_times,
-                            "question": question,
-                            "answer": filtered_answer,  # Extracted final answer list
-                            "ground_truth": ground_truth,
-                            "full_answer": response,  # Complete model response with reasoning
-                        }
-
-                        # Append to JSONL file
-                        with open(self.debug_log_file, "a", encoding="utf-8") as f:
-                            f.write(json.dumps(debug_entry, ensure_ascii=False) + "\n")
-
-                        eval_logger.debug(f"DEBUG: Saved prompt info to {self.debug_log_file}")
-
-                    except Exception as e:
-                        eval_logger.debug(f"DEBUG: Failed to save debug info: {e}")
 
             else:
                 raise ValueError(f"Unsupported modality: {self.modality}")
