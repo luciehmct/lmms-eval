@@ -36,16 +36,24 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Try multiple approaches to load CLIP safely
-        model = None
-        processor = None
+        # Prefer a fast image processor but fall back to the slow version when necessary
+        def _load_processor(model_name: str):
+            try:
+                proc = CLIPProcessor.from_pretrained(model_name, use_fast=True)
+                if not hasattr(proc.image_processor, "_valid_processor_keys"):
+                    raise AttributeError
+                return proc
+            except Exception:
+                print("⚠️ Fast image processor unsupported; using slow version")
+                return CLIPProcessor.from_pretrained(model_name, use_fast=False)
 
+        # Try multiple approaches to load CLIP safely
         try:
             model = CLIPModel.from_pretrained(
                 "openai/clip-vit-base-patch32",
                 use_safetensors=True,
             ).to(device)
-            processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", use_fast=True)
+            processor = _load_processor("openai/clip-vit-base-patch32")
             load_msg = "✓ CLIP loaded with safetensors"
         except Exception as e1:
             try:
@@ -53,7 +61,7 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
                     "openai/clip-vit-base-patch16",
                     use_safetensors=True,
                 ).to(device)
-                processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", use_fast=True)
+                processor = _load_processor("openai/clip-vit-base-patch16")
                 load_msg = "✓ CLIP loaded with clip-vit-base-patch16 and safetensors"
             except Exception as e2:
                 try:
@@ -63,7 +71,7 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
                         use_safetensors=True,
                         trust_remote_code=False,
                     ).to(device)
-                    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", use_fast=True)
+                    processor = _load_processor("openai/clip-vit-base-patch32")
                     load_msg = "✓ CLIP loaded with float16 and safetensors"
                 except Exception as e3:
                     print("All CLIP loading attempts failed:")
@@ -73,26 +81,36 @@ def adaptive_keyframe_sampling(video_path: str, num_segments: int, query: str) -
                     print("Falling back to uniform sampling")
                     return np.linspace(0, total_frames - 1, num_segments, dtype=int)
 
-        raw_tokens = processor.tokenizer(query)["input_ids"]
-        text_inputs = processor(text=query, return_tensors="pt", truncation=True, max_length=77).to(device)
-        if len(raw_tokens) > text_inputs["input_ids"].shape[-1]:
-            print("!! query truncated to 77 tokens for CLIP")
-        with torch.no_grad():
-            text_features = model.get_text_features(**text_inputs)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        try:
+            text_inputs = processor(
+                text=query,
+                return_tensors="pt",
+                truncation=True,
+                max_length=77,
+                return_overflowing_tokens=True,
+            ).to(device)
+            if text_inputs.get("overflowing_tokens"):
+                print("!! query truncated to 77 tokens for CLIP")
+            with torch.no_grad():
+                text_features = model.get_text_features(**text_inputs)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
-        candidate_indices = np.linspace(0, total_frames - 1, num_segments * 4, dtype=int)
-        frames = [Image.fromarray(vr[idx].asnumpy()) for idx in candidate_indices]
-        img_inputs = processor(images=frames, return_tensors="pt").to(device)
-        with torch.no_grad():
-            image_features = model.get_image_features(**img_inputs)
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            candidate_indices = np.linspace(0, total_frames - 1, num_segments * 4, dtype=int)
+            frames = [Image.fromarray(vr[idx].asnumpy()) for idx in candidate_indices]
+            img_inputs = processor(images=frames, return_tensors="pt").to(device)
+            with torch.no_grad():
+                image_features = model.get_image_features(**img_inputs)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+
+            scores = (image_features @ text_features.T).squeeze()
+            topk = scores.topk(num_segments).indices.cpu().numpy()
+            selected = np.sort(candidate_indices[topk])
+        except Exception as e:
+            print(f"Adaptive sampling failed after CLIP load: {e}")
+            print("Falling back to uniform sampling")
+            return np.linspace(0, total_frames - 1, num_segments, dtype=int)
 
         print(load_msg)
-        scores = (image_features @ text_features.T).squeeze()
-        topk = scores.topk(num_segments).indices.cpu().numpy()
-        selected = np.sort(candidate_indices[topk])
-
         print(f"✓ Adaptive sampling successful: selected {len(selected)} frames")
         return selected
 
