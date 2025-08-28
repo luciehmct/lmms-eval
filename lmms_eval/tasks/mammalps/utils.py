@@ -4,6 +4,53 @@ import json
 
 from loguru import logger as eval_logger
 
+import ast
+
+# Compile once; case-insensitive; spans newlines
+_FINAL_ANSWER_RE = re.compile(r"Final\s*answer\s*:\s*(\[[^\]]*\])",
+                              re.IGNORECASE | re.DOTALL)
+
+def _extract_final_answer_list(response):
+    """
+    Strictly extract the LAST 'Final answer: [...]' list.
+    Returns [] if the anchor is missing or parsing fails.
+    """
+    if not isinstance(response, str):
+        return []
+
+    matches = list(_FINAL_ANSWER_RE.finditer(response))
+    if not matches:
+        eval_logger.warning("Strict mode: 'Final answer:' anchor not found; returning empty list.")
+        return []
+
+    raw_list = matches[-1].group(1)  # last occurrence
+
+    # Safe parse (no eval)
+    parsed = None
+    try:
+        parsed = ast.literal_eval(raw_list)
+    except Exception as e1:
+        try:
+            parsed = json.loads(raw_list.replace("'", '"'))
+        except Exception as e2:
+            eval_logger.warning(
+                f"Strict mode: could not parse Final answer list. "
+                f"literal_eval={e1}; json={e2}"
+            )
+            return []
+
+    if not isinstance(parsed, list):
+        eval_logger.warning("Strict mode: Final answer parsed but not a list. Returning empty list.")
+        return []
+
+    # Clean + dedupe (preserve order)
+    out, seen = [], set()
+    for item in parsed:
+        s = str(item).strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
 def mammalps_doc_to_visual(doc, lmms_eval_specific_kwargs=None):
     """Extract visual information from the document, downloading it from HuggingFace if necessary.
@@ -56,24 +103,73 @@ def mammalps_doc_to_text(doc, lmms_eval_specific_kwargs=None):
 
     subtask = lmms_eval_specific_kwargs.get("subtask", "animal")
 
-    # DEBUG: Log what subtask we are generating prompt for with clip and question info
-    eval_logger.debug(f"doc_to_text called with subtask: {subtask}")
+    # DEBUG: Log the initial state
+    eval_logger.debug(f"doc_to_text called with subtask from kwargs: {subtask}")
     eval_logger.debug(f"doc_to_text kwargs: {lmms_eval_specific_kwargs}")
     eval_logger.debug(f"doc_to_text - clip_path: {doc.get('clip', 'Unknown')}")
     eval_logger.debug(f"doc_to_text - question_id: {doc.get('id', 'Unknown')}")
 
+    # Detect the subtask from the call stack
+    # since lmms_eval_specific_kwargs may not contain the subtask
+    import inspect
+
+    detected_subtask = subtask
+
+    try:
+        frame = inspect.currentframe()
+        while frame:
+            frame_locals = frame.f_locals
+
+            # Look for task-related variables in the call stack
+            if "task" in frame_locals:
+                task_obj = frame_locals["task"]
+                if hasattr(task_obj, "_config") and hasattr(task_obj._config, "task"):
+                    task_name = task_obj._config.task
+                    eval_logger.debug(f"Found task name in doc_to_text: {task_name}")
+                    if "action" in task_name:
+                        detected_subtask = "action"
+                    elif "activity" in task_name:
+                        detected_subtask = "activity"
+                    elif "animal" in task_name:
+                        detected_subtask = "animal"
+                    break
+
+            # Additional check for task name in frame
+            if "self" in frame_locals and hasattr(frame_locals["self"], "_config"):
+                config = frame_locals["self"]._config
+                if hasattr(config, "task"):
+                    task_name = config.task
+                    eval_logger.debug(f"Found task name string in doc_to_text: {task_name}")
+                    if "action" in task_name:
+                        detected_subtask = "action"
+                    elif "activity" in task_name:
+                        detected_subtask = "activity"
+                    elif "animal" in task_name:
+                        detected_subtask = "animal"
+
+            frame = frame.f_back
+    except Exception as e:
+        eval_logger.warning(f"Warning: Could not extract task from stack in doc_to_text: {e}")
+
+    # PRIORITIZE explicit subtask from kwargs if it's valid
+    if subtask in ["action", "activity", "animal"] and subtask in doc:
+        detected_subtask = subtask
+        eval_logger.debug(f"Using explicit subtask from kwargs: {detected_subtask}")
+    else:
+        eval_logger.debug(f"Using detected subtask from call stack: {detected_subtask}")
+
     # Use the detected subtask
-    eval_logger.debug(f"Final determined subtask for prompt: {subtask}")
+    eval_logger.debug(f"Final determined subtask for prompt: {detected_subtask}")
 
     # Extract prompt from the nested structure
-    if subtask in doc and "prompt" in doc[subtask]:
-        prompt = doc[subtask]["prompt"]
-        eval_logger.debug(f"Generated {subtask} prompt with <video> placeholder - length: {len(prompt)} chars")
-        eval_logger.debug(f"FULL {subtask.upper()} PROMPT:\n{prompt}")
+    if detected_subtask in doc and "prompt" in doc[detected_subtask]:
+        prompt = doc[detected_subtask]["prompt"]
+        eval_logger.debug(f"Successfully found {detected_subtask} prompt - length: {len(prompt)} chars")
         
         return prompt
     else:
-        eval_logger.error(f"No prompt found for subtask '{subtask}' in document")
+        eval_logger.error(f"No prompt found for subtask '{detected_subtask}' in document")
+        eval_logger.error(f"Available subtasks in doc: {list(doc.keys())}")
         return ""
 
 
@@ -158,55 +254,65 @@ def mammalps_doc_to_target(doc, lmms_eval_specific_kwargs=None):
 
 
 def mammalps_jaccard_metric(predictions, references):
-    """Calculate the Jaccard similarity between predicted and reference labels.
-
-    Args:
-        predictions (list): A list of predicted labels.
-        references (list): A list of reference labels.
-
-    Returns:
-        dict: A dictionary containing the Jaccard similarity score.
+    """Calculate the Jaccard similarity between predicted and reference labels,
+    using a STRICT extractor anchored on the last 'Final answer: [...]' only.
     """
     from lmms_eval.tasks.megabench.metrics.scoring.common.metrics import jaccard_index
+    import re
+    import ast
+    import json
 
-    # Parse the prediction if it's a string with "Final answer:" format
+    # Choose the response payload
     if isinstance(predictions, list) and len(predictions) > 0:
         response = predictions[0]
     else:
         response = predictions
 
+    # Strict extraction from "Final answer: [...]"
     if isinstance(response, str):
-        # Extract list from "Final answer: [...]" format
         predicted_labels = []
 
-        # Try to extract from "Final answer: ['item1', 'item2']" format
-        final_answer_match = re.search(r"Final answer:\s*(\[.*?\])", response, re.IGNORECASE | re.DOTALL)
-        if final_answer_match:
+        # Find the LAST 'Final answer: [...]' (case-insensitive, spans newlines)
+        matches = list(re.finditer(r"Final\s*answer\s*:\s*(\[[^\]]*\])",
+                                   response, re.IGNORECASE | re.DOTALL))
+        if not matches:
+            eval_logger.error("Strict mode: 'Final answer:' anchor not found; using empty list.")
+        else:
+            raw_list = matches[-1].group(1)
             try:
-                predicted_labels = eval(final_answer_match.group(1))
-                if isinstance(predicted_labels, list):
-                    predicted_labels = [str(label).strip() for label in predicted_labels]
-                    eval_logger.debug(f"Extracted via final_answer format: {predicted_labels}")
-            except Exception as e:
-                eval_logger.warning(f"Failed to eval final_answer match: {e}")
+                predicted_labels = ast.literal_eval(raw_list)  # safe parse
+            except Exception as e1:
+                # JSON-like fallback (single → double quotes)
+                try:
+                    predicted_labels = json.loads(raw_list.replace("'", '"'))
+                except Exception as e2:
+                    eval_logger.error(
+                        f"Strict mode: could not parse Final answer list. "
+                        f"literal_eval={e1}; json={e2}"
+                    )
+                    predicted_labels = []
 
-        # Fallback: try to extract any list-like structure
-        if not predicted_labels:
-            list_match = re.search(r"\[([^\]]+)\]", response)
-            if list_match:
-                content = list_match.group(1)
-                # Split by comma and clean up
-                predicted_labels = [item.strip().strip("'\"") for item in content.split(",")]
-                eval_logger.debug(f"Fallback : Extracted via list format: {predicted_labels}")
-
-        if not predicted_labels:
-            eval_logger.warning("No labels extracted from response! Using empty list.")
-            predicted_labels = []
+            if not isinstance(predicted_labels, list):
+                eval_logger.error("Strict mode: Final answer parsed but not a list; using empty list.")
+                predicted_labels = []
+            else:
+                # Clean & dedupe while preserving order
+                seen, cleaned = set(), []
+                for item in predicted_labels:
+                    s = str(item).strip()
+                    if s and s not in seen:
+                        seen.add(s)
+                        cleaned.append(s)
+                predicted_labels = cleaned
 
         parsed_prediction = predicted_labels
     else:
-        # If predictions is already a list, use it directly
+        # If predictions is already a list (pre-parsed), use it directly
         parsed_prediction = predictions if isinstance(predictions, list) else [predictions]
+
+    # Normalize references to a list
+    if isinstance(references, str):
+        references = [references]
 
     # Calculate jaccard index
     jaccard_score = jaccard_index(parsed_prediction, references)
@@ -215,20 +321,9 @@ def mammalps_jaccard_metric(predictions, references):
     return {"mammalps_jaccard": jaccard_score}
 
 
+
 def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
-    """Process model results to extract lists from 'Final answer:' format.
-
-    Args:
-        doc (dict): A dictionary representing the document, expected to contain a "conversations" key with a list of messages.
-        results (list): A list of model response strings to process.
-        lmms_eval_specific_kwargs (dict, optional): Configuration parameters containing:
-            - 'subtask': String specifying the task type ('animal', 'action', or 'activity')
-            Defaults to None, which results in 'animal' subtask being used.
-
-    Returns:
-        list: A list of processed results, each being a dictionary with relevant information.
-    """
-
+    """Process model results to extract labels strictly from 'Final answer: [...]'."""
     if not results or len(results) == 0:
         eval_logger.warning("No results provided to process_results")
         return []
@@ -242,9 +337,7 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
 
     # Try to detect the subtask from the call stack
     import inspect
-
     detected_subtask = subtask
-
     try:
         frame = inspect.currentframe()
         while frame:
@@ -290,39 +383,41 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
     eval_logger.debug(f"question_id: {doc.get('id', 'Unknown')}")
     eval_logger.debug(f"Full response: {repr(response)}")
 
-    # Extract list from response - look for "Final answer:" pattern first
+    # ==== STRICT extraction: only accept the LAST "Final answer: [...]" ====
+    import re, ast, json
     predicted_labels = []
 
-    # Try to extract from "Final answer: ['item1', 'item2']" format
-    final_answer_match = re.search(r"Final answer:\s*(\[.*?\])", response, re.IGNORECASE | re.DOTALL)
-    if final_answer_match:
+    matches = list(re.finditer(r"Final\s*answer\s*:\s*(\[[^\]]*\])",
+                               response, re.IGNORECASE | re.DOTALL))
+    if not matches:
+        eval_logger.error("Strict mode: No valid 'Final answer:' found; returning empty list.")
+    else:
+        raw_list = matches[-1].group(1)  # last occurrence
         try:
-            predicted_labels = eval(final_answer_match.group(1))
-            if isinstance(predicted_labels, list):
-                predicted_labels = [str(label).strip() for label in predicted_labels]
-                eval_logger.debug(f"Extracted via final_answer format: {predicted_labels}")
-        except Exception as e:
-            eval_logger.warning(f"Warning: Failed to eval final_answer match: {e}")
+            predicted_labels = ast.literal_eval(raw_list)  # safe parse
+        except Exception as e1:
+            # JSON-like fallback (single → double quotes)
+            try:
+                predicted_labels = json.loads(raw_list.replace("'", '"'))
+            except Exception as e2:
+                eval_logger.error(
+                    f"Strict mode: could not parse Final answer list. "
+                    f"literal_eval={e1}; json={e2}"
+                )
+                predicted_labels = []
 
-    # Fallback: try to extract any list-like structure
-    if not predicted_labels:
-        list_match = re.search(r"\[([^\]]+)\]", response)
-        if list_match:
-            content = list_match.group(1)
-            # Split by comma and clean up
-            predicted_labels = [item.strip().strip("'\"") for item in content.split(",")]
-            eval_logger.debug(f"Fallback : Extracted via list format: {predicted_labels}")
-
-    # Final fallback: try to extract individual quoted items
-    if not predicted_labels:
-        quoted_items = re.findall(r"['\"]([^'\"]+)['\"]", response)
-        if quoted_items:
-            predicted_labels = quoted_items
-            eval_logger.debug(f"Fallback : Extracted via quoted format: {predicted_labels}")
-
-    if not predicted_labels:
-        eval_logger.warning("Warning: No labels extracted from response! Returning empty list.")
-        predicted_labels = []
+        if not isinstance(predicted_labels, list):
+            eval_logger.error("Strict mode: Final answer parsed but not a list; using empty list.")
+            predicted_labels = []
+        else:
+            # Clean & dedupe while preserving order
+            seen, cleaned = set(), []
+            for item in predicted_labels:
+                s = str(item).strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    cleaned.append(s)
+            predicted_labels = cleaned
 
     eval_logger.debug(f"Final extracted labels: {predicted_labels}")
 
@@ -348,7 +443,7 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
     else:
         eval_logger.error(f"No answer found for subtask '{subtask}' in document structure")
         target_labels = []
-    
+
     if isinstance(target_labels, str):
         target_labels = [target_labels]
 
@@ -361,7 +456,7 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
     try:
         doc_id = doc.get("id", "Unknown")
         clip_path = doc.get("clip", "Unknown")
-        
+
         # Get the enhanced prompt with frame timestamps from InternVL3's cache
         original_prompt = ""
         enhanced_prompt = ""
@@ -371,29 +466,45 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
             if os.path.exists(prompt_cache_file):
                 with open(prompt_cache_file, "r", encoding="utf-8") as f:
                     prompt_cache = json.load(f)
-                
+
                 doc_id_str = str(doc.get("id", "Unknown"))
-                
+
+                # Only use subtask-specific cache; warn if missing
                 if doc_id_str in prompt_cache:
-                    # Use the enhanced prompt with frame timestamps
-                    enhanced_prompt = prompt_cache[doc_id_str].get("enhanced_prompt_with_timestamps", "")
-                    original_prompt = prompt_cache[doc_id_str].get("original_prompt", "")
-                    eval_logger.debug(f"Retrieved enhanced prompt with frame timestamps from InternVL3 cache for doc_id: {doc_id_str}")
+                    cached_entry = prompt_cache[doc_id_str]
+                    if isinstance(cached_entry, dict) and subtask in cached_entry:
+                        enhanced_prompt = cached_entry[subtask].get("enhanced_prompt_with_timestamps", "")
+                        original_prompt = cached_entry[subtask].get("original_prompt", "")
+                        eval_logger.debug(f"Retrieved enhanced {subtask} prompt from subtask-specific cache for doc_id: {doc_id_str}")
+                        eval_logger.debug(f"Enhanced prompt preview: {enhanced_prompt[:200]}...")
+                    else:
+                        eval_logger.warning(f"No enhanced prompt for subtask '{subtask}' in cache for doc_id: {doc_id_str}. Cache entry keys: {list(cached_entry.keys()) if isinstance(cached_entry, dict) else 'not a dict'}")
                 else:
                     eval_logger.debug(f"No cached enhanced prompt found for doc_id: {doc_id_str}")
             else:
                 eval_logger.debug(f"Enhanced prompt cache file not found: {prompt_cache_file}")
         except Exception as e:
             eval_logger.debug(f"Could not load InternVL3 enhanced prompt cache: {e}")
-        
+
         # Fallback to original prompt from document if no enhanced prompt available
         if not enhanced_prompt and subtask in doc and "prompt" in doc[subtask]:
             original_prompt = doc[subtask]["prompt"]
             enhanced_prompt = original_prompt
-            eval_logger.debug(f"Using fallback prompt from document for subtask {subtask}")
+            eval_logger.warning(f"No enhanced prompt with timestamps found for subtask {subtask}, doc_id: {doc_id_str}")
+            eval_logger.warning("Using original prompt as fallback - timestamps may be missing")
+            eval_logger.debug(f"Fallback prompt preview: {enhanced_prompt[:200]}...")
         elif not enhanced_prompt:
-            eval_logger.debug(f"Could not find any prompt for subtask {subtask}")
-        
+            eval_logger.error(f"Could not find any prompt for subtask {subtask}, doc_id: {doc_id_str}")
+            enhanced_prompt = "ERROR: No prompt found"
+
+        # Log what prompt is being saved to JSONL
+        if enhanced_prompt and enhanced_prompt != "ERROR: No prompt found":
+            if "<video>" in enhanced_prompt:
+                eval_logger.warning(f"Saving ORIGINAL prompt (contains <video>) to JSONL for subtask {subtask}, doc_id: {doc_id_str}")
+            else:
+                eval_logger.info(f"Saving ENHANCED prompt (with timestamps) to JSONL for subtask {subtask}, doc_id: {doc_id_str}")
+            eval_logger.debug(f"Prompt being saved: {enhanced_prompt[:200]}...")
+
         # Create comprehensive result entry - with jaccard_score included
         comprehensive_result = {
             "id": doc_id,
@@ -404,33 +515,34 @@ def mammalps_process_results(doc, results, lmms_eval_specific_kwargs=None):
             "ground_truth": target_labels,
             "jaccard_score": jaccard_score
         }
-        
+
         # Create model_used_date_time directory structure in results directory
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         model_name = "InternVL3-8B"  # Can be made configurable if needed
-        
+
         # Use results directory in the lmms-eval repository
         results_base_dir = os.path.join(os.getcwd(), "results")
         output_dir = os.path.join(results_base_dir, f"{model_name}_{timestamp}")
-        
+
         # Create directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Save to subtask-specific JSONL file in the structured directory
         subtask_file = os.path.join(output_dir, f"mammalps_{subtask}.jsonl")
-        
+
         # Append to the subtask-specific file
         with open(subtask_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(comprehensive_result, ensure_ascii=False) + "\n")
-            
+
         eval_logger.debug(f"Saved comprehensive result to {subtask_file}: {doc_id}")
-        
+
     except Exception as e:
         eval_logger.warning(f"Failed to save comprehensive result: {e}")
 
     # Return the computed jaccard score
     return {"jaccard": jaccard_score}
+
 
 
 # Aggregation function for mammalps jaccard results

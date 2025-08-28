@@ -3,6 +3,7 @@ import math
 import json
 import os
 import random
+import atexit
 from datetime import timedelta
 from typing import List, Tuple
 
@@ -385,6 +386,26 @@ class InternVL3(lmms):
         #     self.debug_log_file = f"mammalps_debug_prompts_{os.getpid()}.jsonl"
         #     eval_logger.debug(f"Debug prompts will be saved to: {self.debug_log_file}")
 
+        # Initialize cache file tracking for cleanup
+        self._cache_file_path = "mammalps_enhanced_prompts.json"
+        
+        # Register cleanup function to run at exit
+        atexit.register(self._cleanup_cache_file)
+
+    def _cleanup_cache_file(self):
+        """Helper method to clean up the cache file."""
+        try:
+            import os
+            if hasattr(self, '_cache_file_path') and os.path.exists(self._cache_file_path):
+                os.remove(self._cache_file_path)
+                eval_logger.debug(f"Cleaned up cache file: {self._cache_file_path}")
+        except Exception as e:
+            eval_logger.debug(f"Could not clean up cache file: {e}")
+
+    def __del__(self):
+        """Cleanup cache file when model instance is destroyed."""
+        self._cleanup_cache_file()
+
     @property
     def config(self):
         return self._model.config
@@ -487,7 +508,7 @@ class InternVL3(lmms):
                     input_size=448,
                     max_num=self.max_num,  # Use the configured max_num
                     num_segments=self.num_frame,
-                    use_adaptive_sampling=True,  # Can be made configurable
+                    use_adaptive_sampling=False,  # Disabled to avoid CLIP token limit warnings
                     query=contexts  # Pass the query for potential adaptive sampling
                 )
                 pixel_values = pixel_values.to(torch.bfloat16).cuda()
@@ -547,8 +568,54 @@ class InternVL3(lmms):
                         doc = self.task_dict[task][split][doc_id]
                         cache_key = f"{doc.get('id', doc_id)}"
                         
-                        # Store the enhanced prompt
-                        prompt_cache[cache_key] = {
+                        # Determine subtask (animal, action, activity)
+                        subtask = None
+                        
+                        # Method 1: Try to get subtask from task config
+                        task_name = None
+                        if hasattr(self, 'task') and hasattr(self.task, '_config') and hasattr(self.task._config, 'task'):
+                            task_name = self.task._config.task
+                        elif hasattr(self, '_task_name'):
+                            task_name = self._task_name
+                        
+                        if task_name:
+                            eval_logger.debug(f"DEBUG: Task name from config: {task_name}")
+                            if 'action' in task_name:
+                                subtask = 'action'
+                            elif 'activity' in task_name:
+                                subtask = 'activity'
+                            elif 'animal' in task_name:
+                                subtask = 'animal'
+                        
+                        # Method 2: Robust inference from prompt content
+                        if not subtask:
+                            eval_logger.debug("DEBUG: No subtask from config, using content analysis")
+                            combined_text = contexts + " " + question
+                            
+                            # Look for specific label spaces and keywords
+                            if 'activity label space' in combined_text or 'activities label space' in combined_text:
+                                subtask = 'activity'
+                            elif 'action label space' in combined_text or 'actions label space' in combined_text:
+                                subtask = 'action'
+                            elif 'animal label space' in combined_text or 'animals label space' in combined_text:
+                                subtask = 'animal'
+                            # Additional pattern matching
+                            elif 'list of activities' in combined_text.lower() or 'animal activities' in combined_text.lower():
+                                subtask = 'activity'
+                            elif 'list of actions' in combined_text.lower() or 'animal actions' in combined_text.lower():
+                                subtask = 'action'
+                            elif 'list of animals' in combined_text.lower() or 'animal types' in combined_text.lower():
+                                subtask = 'animal'
+                            else:
+                                subtask = 'unknown'
+                        
+                        eval_logger.debug(f"DEBUG: Detected subtask: {subtask} for doc_id: {cache_key}")
+                        eval_logger.debug(f"DEBUG: Content preview: {combined_text[:300]}...")
+
+                        # Store the enhanced prompt in a subtask-specific way
+                        if cache_key not in prompt_cache:
+                            prompt_cache[cache_key] = {}
+                        prompt_cache[cache_key][subtask] = {
                             "original_prompt": contexts,
                             "enhanced_prompt_with_timestamps": question,
                             "video_length": video_length,
@@ -556,11 +623,14 @@ class InternVL3(lmms):
                             "num_frames": len(num_patches_list)
                         }
                         
+                        eval_logger.debug(f"DEBUG: Saving enhanced prompt to cache for doc_id: {cache_key}, subtask: {subtask}")
+                        eval_logger.debug(f"DEBUG: Enhanced prompt preview: {question[:200]}...")
+                        
                         # Save back to cache file
                         with open(prompt_cache_file, "w", encoding="utf-8") as f:
                             json.dump(prompt_cache, f, ensure_ascii=False, indent=2)
                         
-                        eval_logger.debug(f"DEBUG: Saved enhanced prompt to cache for doc_id: {cache_key}")
+                        eval_logger.debug(f"DEBUG: Successfully saved enhanced prompt to cache file: {prompt_cache_file}")
                         
                     except Exception as e:
                         eval_logger.debug(f"DEBUG: Failed to save enhanced prompt to cache: {e}")
