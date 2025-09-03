@@ -73,7 +73,7 @@ def animalkingdom_doc_to_visual(doc, lmms_eval_specific_kwargs=None):
         from huggingface_hub import hf_hub_download
 
         # Download the video file from the HuggingFace dataset repository
-        local_path = hf_hub_download(repo_id="luciehmct/animalkingdom-test-recognition", filename=clip_path, repo_type="dataset")
+        local_path = hf_hub_download(repo_id="luciehmct/animalkingdom-test", filename=clip_path, repo_type="dataset")
 
         if os.path.exists(local_path):
             return [local_path]
