@@ -38,10 +38,6 @@ python3 dataset_builder.py --dataset mammalps --unified
 | `--dataset / -d` | animalkingdom, mammalnet, mammalps, or all (default: all)                   |
 | `--split / -s`   | test, train, or both (default: both)                                        |
 | `--unified / -u` | Combine train/test into one directory                                       |
-| `--upload`       | Push the built dataset to the Hugging Face Hub                              |
-| `--hf-token`     | Hugging Face token (required when uploading)                                |
-| `--hf-username`  | Hub username (`luciehmct` by default)                                       |
-| `--private`      | Create a private Hub repo                                                   |
 
 ---
 
