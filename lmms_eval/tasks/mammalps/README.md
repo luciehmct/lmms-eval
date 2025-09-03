@@ -28,7 +28,7 @@ python3 dataset_builder.py
 python3 dataset_builder.py --dataset mammalps --unified
 
 # Build and upload a unified dataset
-python3 dataset_builder.py --dataset mammalps --unified --upload --hf-token <TOKEN>
+python3 dataset_builder.py --dataset mammalps --unified
 ```
 
 ## Key options
