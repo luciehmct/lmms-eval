@@ -1,0 +1,102 @@
+{
+  "results": {
+    "mammalps_action": {
+      "alias": "mammalps_action",
+      "jaccard,none": 0.3762057877813505,
+      "jaccard_stderr,none": "N/A"
+    }
+  },
+  "group_subtasks": {
+    "mammalps_action": []
+  },
+  "configs": {
+    "mammalps_action": {
+      "task": "mammalps_action",
+      "tag": "mammalps",
+      "group": "mammalps",
+      "dataset_path": "luciehmct/mammalps",
+      "test_split": "test",
+      "full_docs": false,
+      "process_results_use_image": false,
+      "doc_to_visual": "<function mammalps_doc_to_visual at 0x7756985fc3a0>",
+      "doc_to_text": "<function mammalps_doc_to_text at 0x7756985fca60>",
+      "doc_to_target": "<function mammalps_doc_to_target at 0x7756985fd120>",
+      "process_results": "<function mammalps_process_results at 0x7756985fd990>",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "jaccard",
+          "aggregation": "<function mammalps_jaccard_aggregation at 0x7756985fe170>",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "<|im_end|>"
+        ],
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_new_tokens": 512,
+        "do_sample": false
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0
+      },
+      "lmms_eval_specific_kwargs": {
+        "subtask": "action"
+      }
+    }
+  },
+  "versions": {
+    "mammalps_action": 1.0
+  },
+  "n-shot": {
+    "mammalps_action": 0
+  },
+  "higher_is_better": {
+    "mammalps_action": {
+      "jaccard": true
+    }
+  },
+  "n-samples": {
+    "mammalps_action": {
+      "original": 1244,
+      "effective": 311
+    }
+  },
+  "config": {
+    "model": "internvl3",
+    "model_args": "pretrained=OpenGVLab/InternVL3-8B,modality=video,num_frame=32,use_temporal_context=True",
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": null,
+    "use_cache": null,
+    "limit": 311.0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": "",
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "37316d3",
+  "date": "20250829_153607",
+  "task_hashes": {},
+  "model_source": "internvl3",
+  "model_name": "OpenGVLab/InternVL3-8B",
+  "model_name_sanitized": "OpenGVLab__InternVL3-8B",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": false,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "start_time": 5274933.580068199,
+  "end_time": 5278535.376021028,
+  "total_evaluation_time_seconds": "3601.795952828601"
+}
