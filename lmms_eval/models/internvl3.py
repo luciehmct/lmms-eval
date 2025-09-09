@@ -296,6 +296,7 @@ class InternVL3(lmms):
         num_frame: int = 32,
         dynamic_image_size=False,
         use_temporal_context: bool = True,  # Enable enhanced temporal context by default
+        use_adaptive_sampling: bool = False,  # Disable adaptive sampling by default
         num_layers=None,
         max_num: int = 6,  # Maximum number of image tiles
         **kwargs,
@@ -306,6 +307,7 @@ class InternVL3(lmms):
         self.num_frame = num_frame
         self.max_num = max_num
         self.use_temporal_context = use_temporal_context
+        self.use_adaptive_sampling = use_adaptive_sampling
 
         batch_size = int(batch_size)
         assert batch_size == 1, f"Batch size should be 1 for InternVL3, but got {batch_size}."
@@ -508,7 +510,7 @@ class InternVL3(lmms):
                     input_size=448,
                     max_num=self.max_num,  # Use the configured max_num
                     num_segments=self.num_frame,
-                    use_adaptive_sampling=False,  # Disabled to avoid CLIP token limit warnings
+                    use_adaptive_sampling=self.use_adaptive_sampling,  # Use the configured adaptive sampling setting
                     query=contexts  # Pass the query for potential adaptive sampling
                 )
                 pixel_values = pixel_values.to(torch.bfloat16).cuda()
