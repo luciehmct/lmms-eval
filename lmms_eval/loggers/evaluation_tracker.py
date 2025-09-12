@@ -258,7 +258,7 @@ class EvaluationTracker:
                 path = path.joinpath(self.general_config_tracker.model_name_sanitized)
                 path.mkdir(parents=True, exist_ok=True)
 
-                file_results_samples = path.joinpath(f"{self.date_id}_samples_{task_name}.jsonl")
+                file_results_samples = path.joinpath(f"{task_name}_results_{self.date_id}.jsonl")
 
                 for sample in samples:
                     # we first need to sanitize arguments and resps
