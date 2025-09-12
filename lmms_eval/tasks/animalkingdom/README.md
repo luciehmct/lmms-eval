@@ -1,6 +1,6 @@
 # AnimalKingdom Tasks
 
-The `AnimalKingdom` directory defines evaluation tasks for the **AnimalKingdom** video dataset introduced in the [AnimalKingdom paper](https://arxiv.org/pdf/2503.18223).  
+The `AnimalKingdom` directory defines evaluation tasks for the **AnimalKingdom** video dataset introduced in the [AnimalKingdom paper]( https://arxiv.org/abs/2204.08129).  
 AnimalKingdom targets video understanding of alpine wildlife across three subtasks:
 
 - **Animal recognition** – identify the species visible in a clip.
